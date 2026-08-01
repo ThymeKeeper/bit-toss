@@ -639,8 +639,6 @@ def main():
                     help="von Neumann pair debiasing; implies --bulk, needs ~4x the flips")
     ap.add_argument("--passphrase", default="",
                     help="BIP39 passphrase (25th word). Empty by default.")
-    ap.add_argument("--show-seed", action="store_true",
-                    help="also print the 512-bit BIP39 seed in hex")
     ap.add_argument("--selftest", action="store_true", help="run test vectors and exit")
     args = ap.parse_args()
 
@@ -690,10 +688,9 @@ def main():
         print("   " + "   ".join(cells).rstrip())
 
     print("\n  Master fingerprint: %s" % master_fingerprint(seed))
+    print("  BIP39 seed (hex):   %s" % seed.hex())
     if args.passphrase:
-        print("  (fingerprint includes your passphrase)")
-    if args.show_seed:
-        print("  BIP39 seed (hex):   %s" % seed.hex())
+        print("  (both include your passphrase)")
 
     print("""
   Before funding this wallet:

@@ -19,8 +19,11 @@ python3 bit_toss.py --debias         # von Neumann pair debiasing
 python3 bit_toss.py --selftest       # run BIP39 test vectors and exit
 ```
 
-Other flags: `--passphrase` (BIP39 25th word), `--show-seed` (print the 512-bit
-seed in hex).
+Other flags: `--passphrase` (BIP39 25th word).
+
+Every derivation prints the words, the BIP32 master fingerprint, and the
+512-bit BIP39 seed in hex. If you pass a passphrase, the fingerprint and the
+seed both reflect it; the words do not.
 
 In guided mode you enter 11 flips at a time and each complete group reveals its
 word immediately, so you can follow along on paper. The final group is short —
