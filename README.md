@@ -81,6 +81,16 @@ offline machine:
   key, so the tool can show you a fingerprint to cross-check against
 - BIP32 master key derivation and base58check, for the `xprv`
 
+Before it will take a single flip, the script derives the published BIP39 and
+BIP32 test vectors and refuses to run if any of them come out wrong. This is not
+optional and there is no flag for it, because the failure it guards against is
+invisible. A wallet checks the words you type into it — that they are real
+wordlist entries and that the checksum matches — so a bug in the path that
+produces the words gets caught the moment you restore. Nothing checks what
+happens after. A broken PBKDF2 or BIP32 would still hand you a phrase every
+wallet accepts, while the fingerprint and `xprv` printed alongside it quietly
+belonged to a different wallet.
+
 ## License
 
 MIT

@@ -608,6 +608,71 @@ def ask_words():
 
 
 # ---------------------------------------------------------------------------
+# Self-check against the published BIP39 / BIP32 vectors.
+#
+# A wallet validates the words you type into it -- wordlist membership and the
+# checksum -- so a bug in that path announces itself immediately. Nothing
+# validates what comes after. A broken PBKDF2 or BIP32 still yields a phrase
+# every wallet accepts, while the fingerprint and xprv printed below quietly
+# describe a different wallet. These vectors are the only thing standing
+# between that and your coins, so they run every time, unconditionally.
+# ---------------------------------------------------------------------------
+
+_VECTORS = [
+    ("00000000000000000000000000000000",
+     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+     "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"),
+    ("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+     "legal winner thank year wave sausage worth useful legal winner thank yellow",
+     "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607"),
+    ("0000000000000000000000000000000000000000000000000000000000000000",
+     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+     "bda85446c68413707090a52022edd26a1c9462295029f2e60cd7c4f2bbd3097170af7a4d73245cafa9c3cca8d561a7c3de6f5d4a10be8ed2a5e608d68f92fcc8"),
+    ("8080808080808080808080808080808080808080808080808080808080808080",
+     "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
+     "c0c519bd0e91a2ed54357d9d1ebef6f5af218a153624cf4f2da911a0ed8f7a09e2ef61af0aca007096df430022f7a2b6fb91661a9589097069720d015e4e982f"),
+]
+
+_FP_VECTOR = ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "73c5da0a")
+
+# BIP32 test vector 1: seed 000102030405060708090a0b0c0d0e0f -> master xprv.
+# Exercises the serialization and the base58check encoder end to end.
+_XPRV_VECTOR = (
+    "000102030405060708090a0b0c0d0e0f",
+    "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
+)
+
+
+def _fail(what):
+    sys.exit(
+        "\nFATAL: self-check failed (%s).\n"
+        "This build derives keys incorrectly. Any seed it produces would be\n"
+        "wrong in ways a wallet cannot detect. Do not use its output." % what
+    )
+
+
+def self_check(words):
+    # Only reached where hashlib lacks ripemd160, so the vectors below exercise
+    # whichever path this machine happens to take and leave the other untested.
+    # Check it directly, or it stays unverified until the machine that needs it
+    # is the airgapped one.
+    if _ripemd160_py(b"abc").hex() != "8eb208f7e05d987a9b044a8e98c6b087f15a0bfc":
+        _fail("pure-Python RIPEMD-160")
+    for hex_ent, want_m, want_seed in _VECTORS:
+        got_m = " ".join(entropy_to_mnemonic(bytes.fromhex(hex_ent), words))
+        if got_m != want_m:
+            _fail("mnemonic for entropy %s" % hex_ent)
+        if mnemonic_to_seed(got_m, "TREZOR").hex() != want_seed:
+            _fail("seed for entropy %s" % hex_ent)
+    m, want_fp = _FP_VECTOR
+    if master_fingerprint(mnemonic_to_seed(m, "")) != want_fp:
+        _fail("master fingerprint")
+    hex_seed, want_xprv = _XPRV_VECTOR
+    if master_xprv(bytes.fromhex(hex_seed)) != want_xprv:
+        _fail("BIP32 xprv")
+
+
+# ---------------------------------------------------------------------------
 
 BANNER = """\
 ================================================================
@@ -625,7 +690,9 @@ def main():
     args = ap.parse_args()
 
     words = load_wordlist()
+    self_check(words)
     print(BANNER)
+    print("  Self-check: PASS (BIP39 + BIP32 vectors, wordlist hash)")
 
     if args.flips:
         try:
