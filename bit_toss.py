@@ -692,7 +692,6 @@ def main():
     words = load_wordlist()
     self_check(words)
     print(BANNER)
-    print("  Self-check: PASS (BIP39 + BIP32 vectors, wordlist hash)")
 
     if args.flips:
         try:
