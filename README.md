@@ -1,6 +1,6 @@
 # bit-toss
 
-Derive a BIP39 seed phrase from physical coin flips.
+Derive a bitcoin BIP39 seed phrase from physical coin flips.
 
 You flip a coin, you type H or T, you get the words. No RNG, no library you have
 to trust, no dependencies — Python 3.8+ standard library only, single file, no
@@ -8,6 +8,8 @@ network access, nothing written to disk.
 
 **Run this on an airgapped machine.** A seed phrase typed into a networked
 computer is a seed phrase you should assume is compromised.
+
+<img width="1435" height="1427" alt="seed generator" src="https://github.com/user-attachments/assets/11c5d125-d849-4c1a-b689-b0c842ec5781" />
 
 ## Usage
 
