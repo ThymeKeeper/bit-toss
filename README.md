@@ -9,7 +9,8 @@ network access, nothing written to disk.
 **Run this on an airgapped machine.** A seed phrase typed into a networked
 computer is a seed phrase you should assume is compromised.
 
-<img width="1435" height="1427" alt="seed generator" src="https://github.com/user-attachments/assets/11c5d125-d849-4c1a-b689-b0c842ec5781" />
+screenshot:
+<img width="1088" height="1537" alt="screenshot" src="https://github.com/user-attachments/assets/89a90dbb-fb32-46f0-aced-459a011c914a" />
 
 ## Usage
 
