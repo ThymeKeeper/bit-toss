@@ -462,9 +462,47 @@ def mnemonic_to_seed(mnemonic, passphrase=""):
     return hashlib.pbkdf2_hmac("sha512", m, salt, 2048, 64)
 
 
-def master_fingerprint(seed):
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58check(payload):
+    data = payload + hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+    n = int.from_bytes(data, "big")
+    out = ""
+    while n:
+        n, r = divmod(n, 58)
+        out = _B58[r] + out
+    # Each leading zero byte is one leading '1'.
+    return "1" * (len(data) - len(data.lstrip(b"\x00"))) + out
+
+
+def master_key(seed):
+    """BIP32 master key: (private key, chain code) from the BIP39 seed."""
     I = hmac.new(b"Bitcoin seed", seed, hashlib.sha512).digest()
-    return hash160(compressed_pubkey(I[:32]))[:4].hex()
+    priv, chain = I[:32], I[32:]
+    if not 0 < int.from_bytes(priv, "big") < _N:
+        # Astronomically unlikely; BIP32 says reject rather than fudge it.
+        raise ValueError("invalid master key for this seed")
+    return priv, chain
+
+
+def master_fingerprint(seed):
+    priv, _ = master_key(seed)
+    return hash160(compressed_pubkey(priv))[:4].hex()
+
+
+def master_xprv(seed):
+    """Serialized BIP32 master private key -- the importable `xprv...` form."""
+    priv, chain = master_key(seed)
+    payload = (
+        bytes.fromhex("0488ADE4")   # mainnet private version
+        + b"\x00"                   # depth 0: this is the master
+        + b"\x00" * 4               # no parent, so no parent fingerprint
+        + b"\x00" * 4               # child number 0
+        + chain
+        + b"\x00" + priv            # private keys are left-padded to 33 bytes
+    )
+    return b58check(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +639,13 @@ _VECTORS = [
 
 _FP_VECTOR = ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "73c5da0a")
 
+# BIP32 test vector 1: seed 000102030405060708090a0b0c0d0e0f -> master xprv.
+# Exercises the serialization and the base58check encoder end to end.
+_XPRV_VECTOR = (
+    "000102030405060708090a0b0c0d0e0f",
+    "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
+)
+
 
 def selftest(words):
     ok = True
@@ -616,7 +661,12 @@ def selftest(words):
     if got_fp != want_fp:
         ok = False
         print("FAIL fingerprint\n  got  %s\n  want %s" % (got_fp, want_fp))
-    print("Self-test: %s (%d BIP39 vectors + fingerprint + wordlist hash)"
+    hex_seed, want_xprv = _XPRV_VECTOR
+    got_xprv = master_xprv(bytes.fromhex(hex_seed))
+    if got_xprv != want_xprv:
+        ok = False
+        print("FAIL xprv\n  got  %s\n  want %s" % (got_xprv, want_xprv))
+    print("Self-test: %s (%d BIP39 vectors + fingerprint + xprv + wordlist hash)"
           % ("PASS" if ok else "FAIL", len(_VECTORS)))
     return ok
 
@@ -687,10 +737,15 @@ def main():
         cells = ["%2d. %-8s" % (c * rows + r + 1, mnemonic_words[c * rows + r]) for c in range(3)]
         print("   " + "   ".join(cells).rstrip())
 
+    priv, chain = master_key(seed)
     print("\n  Master fingerprint: %s" % master_fingerprint(seed))
     print("  BIP39 seed (hex):   %s" % seed.hex())
+    print("\n  BIP32 master private key")
+    print("    xprv:       %s" % master_xprv(seed))
+    print("    key (hex):  %s" % priv.hex())
+    print("    chain code: %s" % chain.hex())
     if args.passphrase:
-        print("  (both include your passphrase)")
+        print("\n  (everything above except the words includes your passphrase)")
 
     print("""
   Before funding this wallet:

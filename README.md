@@ -23,9 +23,19 @@ python3 bit_toss.py --selftest       # run BIP39 test vectors and exit
 
 Other flags: `--passphrase` (BIP39 25th word).
 
-Every derivation prints the words, the BIP32 master fingerprint, and the
-512-bit BIP39 seed in hex. If you pass a passphrase, the fingerprint and the
-seed both reflect it; the words do not.
+Every derivation prints:
+
+- the 12–24 mnemonic words
+- the BIP32 master fingerprint
+- the 512-bit BIP39 seed, in hex
+- the BIP32 master private key, as an importable `xprv...`, plus the raw
+  32-byte key and chain code in hex
+
+These are all the same secret in different notations. The `xprv` is the actual
+private key the mnemonic expands into — everything in the wallet derives from
+it, so it is exactly as dangerous as the words and deserves the same handling.
+
+If you pass a passphrase, every one of those except the words reflects it.
 
 In guided mode you enter 11 flips at a time and each complete group reveals its
 word immediately, so you can follow along on paper. The final group is short —
@@ -79,10 +89,11 @@ offline machine:
   and `hashlib` usually can't supply it
 - just enough secp256k1 to turn the BIP32 master key into a compressed public
   key, so the tool can show you a fingerprint to cross-check against
+- BIP32 master key derivation and base58check, for the `xprv`
 
-`--selftest` runs the official BIP39 test vectors plus a known-good fingerprint,
-and runs automatically before every derivation. It refuses to proceed if it
-fails.
+`--selftest` runs the official BIP39 test vectors, a known-good fingerprint, and
+BIP32 test vector 1 for the `xprv`. It runs automatically before every
+derivation and refuses to proceed if it fails.
 
 ## License
 
