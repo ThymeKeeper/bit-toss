@@ -14,12 +14,14 @@ computer is a seed phrase you should assume is compromised.
 ## Usage
 
 ```
-python3 bit_toss.py                  # interactive, guided entry (24 words)
-python3 bit_toss.py --words 12       # 12-word seed (128 flips)
-python3 bit_toss.py --bulk           # paste the whole flip string at once
-python3 bit_toss.py --debias         # von Neumann pair debiasing
-python3 bit_toss.py --selftest       # run BIP39 test vectors and exit
+python3 bit_toss.py                  # interactive, guided entry
+python3 bit_toss.py HTTHHTTH...      # the whole flip string as an argument
 ```
+
+Run bare and the script asks whether you want a 12- or 24-word seed, then takes
+your flips in groups of 11. Or pass the whole flip string as an argument —
+128 or 256 flips, H/1 = heads, T/0 = tails, whitespace and dashes ignored —
+and the word count is inferred from the length.
 
 Other flags: `--passphrase` (BIP39 25th word).
 
@@ -49,20 +51,7 @@ One flip is one bit. A 24-word seed is 256 bits of entropy, so 256 flips; a
 | words | entropy | flips |
 |-------|---------|-------|
 | 12    | 128     | 128   |
-| 15    | 160     | 160   |
-| 18    | 192     | 192   |
-| 21    | 224     | 224   |
 | 24    | 256     | 256   |
-
-## Debiasing
-
-A real coin is not perfectly fair, and a real human is not a perfect flipper.
-`--debias` applies von Neumann extraction: flip in pairs, HT becomes 1, TH
-becomes 0, HH and TT are discarded. The output is unbiased for any fixed coin
-bias, at the cost of roughly 4x the flips.
-
-If your coin and your flip are honest, plain mode is fine. If you want the
-guarantee without having to trust either, use `--debias`.
 
 ## Verify before you fund anything
 
@@ -90,10 +79,6 @@ offline machine:
 - just enough secp256k1 to turn the BIP32 master key into a compressed public
   key, so the tool can show you a fingerprint to cross-check against
 - BIP32 master key derivation and base58check, for the `xprv`
-
-`--selftest` runs the official BIP39 test vectors, a known-good fingerprint, and
-BIP32 test vector 1 for the `xprv`. It runs automatically before every
-derivation and refuses to proceed if it fails.
 
 ## License
 

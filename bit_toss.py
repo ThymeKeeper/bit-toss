@@ -9,10 +9,7 @@ seed phrase you should assume is compromised.
 
 Usage:
     python3 bit_toss.py                  # interactive, guided entry
-    python3 bit_toss.py --words 12       # 12-word seed (128 flips)
-    python3 bit_toss.py --bulk           # paste the whole bit string
-    python3 bit_toss.py --debias         # von Neumann pair debiasing
-    python3 bit_toss.py --selftest       # run BIP39 test vectors, exit
+    python3 bit_toss.py HTTHHTTH...      # the whole flip string as an argument
 
 Verification:
     Re-derive the same flips on a second, independent implementation
@@ -523,16 +520,6 @@ def normalize(raw):
     return "".join(out)
 
 
-def debias(raw_bits):
-    """Von Neumann: HT -> 1, TH -> 0, HH and TT discarded."""
-    out = []
-    for i in range(0, len(raw_bits) - 1, 2):
-        a, b = raw_bits[i], raw_bits[i + 1]
-        if a != b:
-            out.append("1" if a == "1" else "0")
-    return "".join(out)
-
-
 def ansi_ok():
     """True only if we can safely move the cursor back up a line."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
@@ -607,68 +594,17 @@ def guided_entry(ent_bits, words):
     return bits
 
 
-def bulk_entry(ent_bits, want_raw):
-    label = "raw flips (debiasing will consume some)" if want_raw else "%d flips" % ent_bits
-    print("\nPaste the full flip string. H/1 = heads, T/0 = tails.")
-    print("Whitespace and dashes ignored.\n")
-    try:
-        raw = input("  %s: " % label)
-    except (EOFError, KeyboardInterrupt):
-        sys.exit("\nAborted. Nothing was saved.")
-    return normalize(raw)
-
-
-# ---------------------------------------------------------------------------
-# Self-test against the official BIP39 vectors
-# ---------------------------------------------------------------------------
-
-_VECTORS = [
-    ("00000000000000000000000000000000",
-     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-     "c55257c360c07c72029aebc1b53c05ed0362ada38ead3e3e9efa3708e53495531f09a6987599d18264c1e1c92f2cf141630c7a3c4ab7c81b2f001698e7463b04"),
-    ("7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
-     "legal winner thank year wave sausage worth useful legal winner thank yellow",
-     "2e8905819b8723fe2c1d161860e5ee1830318dbf49a83bd451cfb8440c28bd6fa457fe1296106559a3c80937a1c1069be3a3a5bd381ee6260e8d9739fce1f607"),
-    ("0000000000000000000000000000000000000000000000000000000000000000",
-     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
-     "bda85446c68413707090a52022edd26a1c9462295029f2e60cd7c4f2bbd3097170af7a4d73245cafa9c3cca8d561a7c3de6f5d4a10be8ed2a5e608d68f92fcc8"),
-    ("8080808080808080808080808080808080808080808080808080808080808080",
-     "letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic avoid letter advice cage absurd amount doctor acoustic bless",
-     "c0c519bd0e91a2ed54357d9d1ebef6f5af218a153624cf4f2da911a0ed8f7a09e2ef61af0aca007096df430022f7a2b6fb91661a9589097069720d015e4e982f"),
-]
-
-_FP_VECTOR = ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "73c5da0a")
-
-# BIP32 test vector 1: seed 000102030405060708090a0b0c0d0e0f -> master xprv.
-# Exercises the serialization and the base58check encoder end to end.
-_XPRV_VECTOR = (
-    "000102030405060708090a0b0c0d0e0f",
-    "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
-)
-
-
-def selftest(words):
-    ok = True
-    for hex_ent, expect_m, expect_seed in _VECTORS:
-        got_m = " ".join(entropy_to_mnemonic(bytes.fromhex(hex_ent), words))
-        got_seed = mnemonic_to_seed(got_m, "TREZOR").hex()
-        for label, got, want in (("mnemonic", got_m, expect_m), ("seed", got_seed, expect_seed)):
-            if got != want:
-                ok = False
-                print("FAIL %s for entropy %s\n  got  %s\n  want %s" % (label, hex_ent, got, want))
-    m, want_fp = _FP_VECTOR
-    got_fp = master_fingerprint(mnemonic_to_seed(m, ""))
-    if got_fp != want_fp:
-        ok = False
-        print("FAIL fingerprint\n  got  %s\n  want %s" % (got_fp, want_fp))
-    hex_seed, want_xprv = _XPRV_VECTOR
-    got_xprv = master_xprv(bytes.fromhex(hex_seed))
-    if got_xprv != want_xprv:
-        ok = False
-        print("FAIL xprv\n  got  %s\n  want %s" % (got_xprv, want_xprv))
-    print("Self-test: %s (%d BIP39 vectors + fingerprint + xprv + wordlist hash)"
-          % ("PASS" if ok else "FAIL", len(_VECTORS)))
-    return ok
+def ask_words():
+    while True:
+        try:
+            raw = input("\nHow many words, 12 or 24? [24]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            sys.exit("\nAborted. Nothing was saved.")
+        if raw == "":
+            return 24
+        if raw in ("12", "24"):
+            return int(raw)
+        print("    enter 12 or 24")
 
 
 # ---------------------------------------------------------------------------
@@ -682,46 +618,31 @@ BANNER = """\
 
 def main():
     ap = argparse.ArgumentParser(description="Derive a BIP39 mnemonic from coin flips.")
-    ap.add_argument("--words", type=int, choices=(12, 15, 18, 21, 24), default=24,
-                    help="mnemonic length (default 24)")
-    ap.add_argument("--bulk", action="store_true", help="paste the whole flip string at once")
-    ap.add_argument("--debias", action="store_true",
-                    help="von Neumann pair debiasing; implies --bulk, needs ~4x the flips")
+    ap.add_argument("flips", nargs="*",
+                    help="the whole flip string, 128 or 256 flips; omit for guided entry")
     ap.add_argument("--passphrase", default="",
                     help="BIP39 passphrase (25th word). Empty by default.")
-    ap.add_argument("--selftest", action="store_true", help="run test vectors and exit")
     args = ap.parse_args()
 
     words = load_wordlist()
-
-    if args.selftest:
-        sys.exit(0 if selftest(words) else 1)
-
-    ent_bits = args.words * 11 - args.words * 11 // 33
     print(BANNER)
-    if not selftest(words):
-        sys.exit("Refusing to continue: self-test failed.")
 
-    print("\n%d words -> %d bits of entropy -> %d coin flips."
-          % (args.words, ent_bits, ent_bits))
-
-    if args.debias:
-        print("Debiasing on: flip in pairs. HT -> 1, TH -> 0, HH and TT discarded.")
-        print("Expect to need roughly %d raw flips to yield %d clean bits."
-              % (ent_bits * 4, ent_bits))
-        raw = bulk_entry(ent_bits, want_raw=True)
-        bits = debias(raw)
-        print("\n  %d raw flips -> %d unbiased bits." % (len(raw), len(bits)))
-        if len(bits) < ent_bits:
-            sys.exit("  Not enough. Flip %d more pairs and run again." % (ent_bits - len(bits)))
-        if len(bits) > ent_bits:
-            print("  Using the first %d, discarding %d." % (ent_bits, len(bits) - ent_bits))
-            bits = bits[:ent_bits]
-    elif args.bulk:
-        bits = bulk_entry(ent_bits, want_raw=False)
-        if len(bits) != ent_bits:
-            sys.exit("Got %d flips, need exactly %d." % (len(bits), ent_bits))
+    if args.flips:
+        try:
+            bits = normalize("".join(args.flips))
+        except ValueError as e:
+            sys.exit(str(e))
+        if len(bits) not in (128, 256):
+            sys.exit("Got %d flips, need 128 (12 words) or 256 (24 words)." % len(bits))
+        ent_bits = len(bits)
+        n_words = 12 if ent_bits == 128 else 24
+        print("\n%d flips -> %d bits of entropy -> %d words."
+              % (ent_bits, ent_bits, n_words))
     else:
+        n_words = ask_words()
+        ent_bits = n_words * 11 - n_words * 11 // 33
+        print("\n%d words -> %d bits of entropy -> %d coin flips."
+              % (n_words, ent_bits, ent_bits))
         bits = guided_entry(ent_bits, words)
 
     entropy = int(bits, 2).to_bytes(ent_bits // 8, "big")
@@ -756,6 +677,14 @@ def main():
     3. Destroy the paper record of the raw flips.
     4. Close this terminal and clear its scrollback.
 """)
+
+    # Launched from a file manager, the terminal is the script's parent and
+    # dies with it, taking the words above with it. Hold the window open.
+    if sys.stdin.isatty():
+        try:
+            input("  Press Enter once the words are written down. ")
+        except (EOFError, KeyboardInterrupt):
+            pass
 
 
 if __name__ == "__main__":
