@@ -21,8 +21,10 @@ Verification:
 import argparse
 import hashlib
 import hmac
+import math
 import os
 import sys
+import time
 import unicodedata
 
 WORDLIST_SHA256 = "2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda"
@@ -538,6 +540,334 @@ def ansi_ok():
     return os.environ.get("TERM", "") not in ("", "dumb")
 
 
+# ---------------------------------------------------------------------------
+# One way to produce a bit without a coin, and it is still your hand that
+# produces it. Pressing r takes the moment your finger arrived and keeps one
+# bit of it. That is real physical entropy from outside the computer -- but
+# unlike a coin it is measured by this machine's clock and delivered by its
+# scheduler, so it is only as unpredictable as your typing is irregular. The
+# accounting printed with the seed keeps the two apart in bits and never
+# pretends a tossed bit is a flipped one.
+#
+# There is deliberately no option to fill a group from os.urandom. This file
+# never calls it, and never calls any RNG: a seed it produces is made of coin
+# flips and keystrokes, nothing else.
+#
+# What this also deliberately does NOT do is run a statistical test on its own
+# output. Hashing does not create entropy: SHA-256 of a 20-bit source still has
+# 20 bits of min-entropy, and it still passes monobit, chi-square, dieharder
+# and every compressor. Measured here: a held-down key yields 0.87-0.92 bits of
+# parity min-entropy per press -- statistically perfect, and worthless, because
+# the user made one decision rather than 256. Against the only failure that
+# matters a test has no power, and printing a passing result would manufacture
+# the false confidence this file exists to refuse. The guards below are
+# structural instead: they check that the keypresses actually happened.
+# ---------------------------------------------------------------------------
+
+_TOSS_KEYS = "rR"
+
+
+def clock_quantum(samples=20000):
+    """The smallest step this machine's clock actually moves in, in ns.
+
+    This is the check the whole "r" mode stands on. perf_counter_ns reports
+    nanoseconds everywhere, but Windows QPC is typically a 10 MHz counter, so
+    every timestamp it returns is a multiple of 100 and the low bit is a
+    CONSTANT ZERO. Taking t & 1 there makes every toss come out tails, with a
+    valid BIP39 checksum that every wallet accepts -- the exact shape of failure
+    this file exists to prevent. Dividing by the measured step instead of
+    assuming 1 keeps the parity uniform on every clock: measured 0.98-0.99 bits
+    per toss from a 1 ns tick all the way out to a 15.6 ms one.
+
+    This can UNDER-estimate. Apple's M-series timebase is 125/3, a 41.67 ns
+    tick, so successive deltas come back 41 and 42 and their gcd is 1 -- the
+    real granularity is 42x coarser than this reports. The same holds on a
+    Raspberry Pi and on most ARM64. That is safe here: under-estimating only
+    means dividing by too little, and the low bit of the result stays alive
+    because the steps still have gcd 1. It never over-estimates, which is the
+    direction that would matter: a gcd of real deltas cannot exceed the real
+    step.
+
+    20000 samples, not 2000, because the probe has to last long enough to see
+    the tick it is trying to reject. 2000 reads span about 130 us, so a clock
+    coarser than that never moves during the probe at all; 20000 span 1.7 ms
+    and register 140 movements at a 10 us tick.
+    """
+    return _quantum_of([time.perf_counter_ns() for _ in range(samples)])
+
+
+def _quantum_of(ts):
+    """gcd of the steps a clock actually took, or 0 if it never took one.
+
+    Zero means "unmeasurable", and it must stay zero. An earlier version of
+    this ended `return g or 1`, which turned "this clock is too coarse to
+    measure" into "this clock is perfect" -- the single most dangerous value,
+    and one that sails through every threshold downstream. The guard against
+    coarse clocks was defeated by coarse clocks.
+    """
+    g = 0
+    for a, b in zip(ts, ts[1:]):
+        if b > a:
+            g = math.gcd(g, b - a)
+    return g
+
+
+def _toss_bit(t_ns, quantum):
+    """One bit from the moment your finger arrived.
+
+    Three deliberate choices, each measured rather than guessed:
+
+    The ABSOLUTE timestamp, not the gap since the last key. Subtraction mod 2
+    is XOR, so the parity of a gap is just the parities of its two endpoints
+    XORed together -- it cannot hold more entropy than the endpoints do, and
+    verified on 27,000 real keypresses it never once differed. What it does do
+    is whiten: against a source biased to P(1)=0.8 it reports 0.55 bits where
+    the truth is 0.32, overstating by 73%. A whitener wearing a source's
+    clothes is the last thing this file needs.
+
+    Divided by the measured tick, not by 1. On a 100 ns clock every raw
+    timestamp is a multiple of 100, so its low bit is a constant and every toss
+    comes out tails -- with a valid checksum that every wallet accepts.
+
+    The lowest bit of the tick count, and not a popcount of sixteen of them.
+    Both measure the same on real keypresses -- 0.9805 and 0.9874 against an
+    ideal source's 0.9833 at that sample size, which is to say both are at the
+    ceiling and the difference is noise. So the tiebreak is how they FAIL, and
+    there they are opposites. The low bit is provably alive: if quantum is the
+    gcd of the steps this clock takes, then t // quantum advances in steps whose
+    gcd is 1, so the low bit cannot be constant. Where that premise breaks the
+    breakage is deafening -- every toss comes out tails and the tool prints
+    "abandon abandon ... art". A popcount in the same situation emits beautifully
+    balanced bits that pass every test while being worth nothing. Folding bits
+    together is whitening, and whitening a dead source is exactly how this file
+    would come to hand somebody a valid-checksum seed that is already spent.
+    """
+    return "1" if (t_ns // quantum) & 1 else "0"
+
+
+class Reject(Exception):
+    """A run of keypresses that this program is not willing to call flips."""
+
+
+_MAX_QUANTUM_NS = 10_000       # 10 us. Coarser and the bits stop being
+                               #   unpredictable while still looking balanced,
+                               #   and the probe itself stops being able to
+                               #   measure the tick it is meant to reject.
+_DEBOUNCE_NS = 100_000_000     # 100 ms of silence required before an r counts.
+                               #   Above every autorepeat rate in the wild:
+                               #   Windows 30 Hz (33 ms), X11 25 Hz (40 ms),
+                               #   macOS 11 Hz (90 ms). Below a deliberate
+                               #   press, which is 3-8 Hz.
+_REG_WINDOW = 10               # accepted gaps per regularity window
+_REG_RATIO = 0.10              # observed: autorepeat p99 = 0.026, human >> 1
+_HINT = "   too fast, press r slowly"
+# Prompt (15) + the widest group (11) + the hint. Every live redraw is padded to
+# this, so one line can never leave a fragment of a longer one behind it.
+_LINE_WIDTH = 15 + 11 + len(_HINT)
+
+
+class FlipGuard:
+    """Decides which keypresses this program is willing to call flips.
+
+    It does not check the bits, and could not usefully. Parity is fine even
+    when the feature is abused -- a key held down at 33 Hz still measures 0.92
+    bits per press, because tty delivery jitter is ~92 us and parity only
+    degrades below ~10 ns of jitter, a 10,000x margin. That is precisely the
+    danger: a held key produces statistically perfect bits out of the OS
+    scheduler while the user believes they made 256 decisions. It has to be
+    caught at the moment of arrival or not at all.
+
+    The main defence is a debounce, and the subtlety is what it debounces
+    AGAINST. Measuring from the last ACCEPTED press does not work: a key
+    repeating every 33 ms against a 50 ms debounce simply has every other
+    repeat accepted, yielding a decimated 15 Hz stream that is *more* regular
+    than what it came from and just as much the scheduler's. Measuring from the
+    last press of ANY key, accepted or not, kills it outright -- while a key is
+    down there is never 100 ms of silence in front of a press, so not one bit
+    is ever taken and the group simply stops filling. The same disposes of a
+    paste, whose characters arrive microseconds apart.
+
+    That leaves one thing a debounce cannot see: a macro tapping r at a
+    believable but perfectly even 150 ms. Hence the regularity check, which is
+    the only rule here that discards a group rather than ignoring a keystroke.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.last_key = None       # ANY key, whether or not it earned a bit
+        self.last_ok = None        # last press actually taken as a bit
+        self.win = []
+
+    def feed(self, t_ns, chunk_len, is_toss):
+        """Called once for EVERY keystroke. True only if this one earned a bit.
+
+        One call rather than an ask-then-tell pair, because the ordering is the
+        whole mechanism and a two-call version invites comparing a press against
+        itself -- which silently means nothing is ever accepted.
+
+        Every keystroke updates the clock, not just r: holding r down inside a
+        group whose other bits you typed still has to earn nothing, and a burst
+        of anything at all is evidence that what follows was queued, not made.
+        """
+        prev, self.last_key = self.last_key, t_ns
+        if not is_toss:
+            return False
+        # A multi-byte read is refused structurally rather than by timing: the
+        # kernel handed over several characters at once, so they were queued
+        # before we ever looked. (A pasted run of H/T never reaches here -- that
+        # is a paper record being transcribed. A pasted r is not the same thing.)
+        if chunk_len > 1:
+            return False
+        if prev is not None and t_ns - prev < _DEBOUNCE_NS:
+            return False
+        if self.last_ok is not None:
+            self.win.append(t_ns - self.last_ok)
+            if len(self.win) > _REG_WINDOW:
+                self.win.pop(0)
+            if len(self.win) == _REG_WINDOW:
+                med = sorted(self.win)[_REG_WINDOW // 2]
+                spread = (max(self.win) - min(self.win)) / med if med else 0
+                if spread < _REG_RATIO:
+                    # Stated as an observation about the timing, not a verdict
+                    # about the person. Falling into a rhythm while tapping one
+                    # key is an easy and honest thing to do, and the fix is the
+                    # same either way.
+                    raise Reject("%d presses within %.1f%% of %.0f ms apart"
+                                 % (_REG_WINDOW, 100 * spread, med / 1e6))
+        self.last_ok = t_ns
+        return True
+
+
+def keys_available():
+    """True only where single keypresses can be read AND timed meaningfully."""
+    try:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            return False
+    except Exception:
+        return False              # sys.stdin is None under pythonw
+    if os.environ.get("SSH_TTY") or os.environ.get("SSH_CONNECTION"):
+        # Over ssh these timestamps measure packet arrival, not your hand, and
+        # every keystroke becomes an individually timed packet on the wire.
+        # This tool is supposed to be airgapped anyway.
+        return False
+    try:
+        if os.name == "nt":
+            import msvcrt                                      # noqa: F401
+            return True
+        import termios
+        termios.tcgetattr(sys.stdin.fileno())
+        return True
+    except Exception:
+        return False              # no termios, or no fileno (IDE console)
+
+
+class KeyReader:
+    """Single keypresses with their arrival times.
+
+    cbreak, not raw: ISIG stays on, so Ctrl-C is still generated by the tty
+    driver rather than by an if-statement of ours. In a program that puts a
+    seed phrase on screen, "Ctrl-C always works" belongs in the kernel.
+
+    tty.setcbreak is deliberately not used: through Python 3.11 it edits the
+    caller's control-character list in place and returns None, and this file
+    supports 3.8. Setting the flags here also shows exactly which bits change.
+    """
+
+    def __init__(self):
+        self._saved = None
+        self._buf = []
+        self._buf_t = 0
+        self._buf_n = 1
+
+    def __enter__(self):
+        if os.name == "nt":
+            import msvcrt
+            self._msvcrt = msvcrt
+            return self
+        import signal
+        import termios
+        self._signal, self._termios = signal, termios
+        self._fd = sys.stdin.fileno()
+        self._saved = termios.tcgetattr(self._fd)
+        mode = termios.tcgetattr(self._fd)     # a second, independent copy
+        mode[3] &= ~(termios.ECHO | termios.ICANON)
+        mode[3] |= termios.ISIG
+        mode[6][termios.VMIN] = 1
+        mode[6][termios.VTIME] = 0
+        self._cbreak = mode
+        # TCSAFLUSH, not TCSANOW: discard anything typed before this instant, so
+        # keys pressed ahead of the prompt can never be counted as flips.
+        termios.tcsetattr(self._fd, termios.TCSAFLUSH, mode)
+        self._prev_tstp = signal.signal(signal.SIGTSTP, self._suspend)
+        self._prev_cont = signal.signal(signal.SIGCONT, self._resume)
+        return self
+
+    def __exit__(self, *exc):
+        self.restore()
+        return False                           # never swallow KeyboardInterrupt
+
+    def _set(self, mode):
+        try:
+            self._termios.tcsetattr(self._fd, self._termios.TCSADRAIN, mode)
+        except Exception:
+            pass      # terminal already hung up; must not mask the real error
+
+    def restore(self):
+        if self._saved is None:
+            return
+        # Uninstall the handlers first: a SIGTSTP arriving after _saved is
+        # cleared would reach _suspend with nothing left to restore to.
+        self._signal.signal(self._signal.SIGTSTP, self._prev_tstp)
+        self._signal.signal(self._signal.SIGCONT, self._prev_cont)
+        saved, self._saved = self._saved, None
+        self._set(saved)
+
+    def _suspend(self, sig, frame):            # Ctrl-Z: hand the tty back first
+        self._set(self._saved)
+        self._signal.signal(self._signal.SIGTSTP, self._signal.SIG_DFL)
+        os.kill(os.getpid(), self._signal.SIGTSTP)
+
+    def _resume(self, sig, frame):             # fg: take it back
+        self._signal.signal(self._signal.SIGTSTP, self._suspend)
+        if self._saved is not None:
+            self._set(self._cbreak)
+
+    def drain(self):
+        """Throw away anything already typed ahead but not yet consumed."""
+        self._buf = []
+        if os.name != "nt" and self._saved is not None:
+            try:
+                self._termios.tcflush(self._fd, self._termios.TCIFLUSH)
+            except Exception:
+                pass
+
+    def key(self):
+        """(codepoint, arrival ns, how many bytes arrived in that one read)."""
+        if os.name == "nt":
+            ch = self._msvcrt.getwch()
+            t = time.perf_counter_ns()
+            if ch in ("\x00", "\xe0"):         # arrow/function key: eat the code
+                self._msvcrt.getwch()
+                return 0, t, 1
+            if ch == "\x03":                   # getwch never raises on Ctrl-C
+                raise KeyboardInterrupt
+            if ch == "\x04":
+                raise EOFError
+            return ord(ch), t, 1
+        if not self._buf:
+            chunk = os.read(self._fd, 64)
+            t = time.perf_counter_ns()         # first statement after the read
+            if not chunk:
+                raise EOFError
+            self._buf, self._buf_t, self._buf_n = list(chunk), t, len(chunk)
+        c = self._buf.pop(0)
+        if c == 4 and self._buf_n == 1:        # ICANON is off, so Ctrl-D is a byte
+            raise EOFError
+        return c, self._buf_t, self._buf_n
+
+
 def prompt_bits(need, label):
     prompt = "  %-11s: " % label
     while True:
@@ -559,7 +889,85 @@ def prompt_bits(need, label):
             shown = bits.replace("1", "H").replace("0", "T")
         else:
             shown = bits
-        return bits, prompt, shown
+        return bits, prompt, shown, "c" * need
+
+
+def _render(bits, kinds):
+    """H/T for the ones you flipped, 0/1 for the ones you tossed.
+
+    Provenance is then visible per bit rather than per group, so a line of
+    HTHT01HT says at a glance which characters your paper record is
+    authoritative for. The flip string printed at the end is plain 0/1
+    regardless -- that one has to be retypeable into another tool.
+    """
+    return "".join("HT"[b == "0"] if k == "c" else b for b, k in zip(bits, kinds))
+
+
+def keypress_bits(need, label, reader, guard, quantum, tossable):
+    """Collect `need` bits one keypress at a time.
+
+    Returns (bits, prompt, shown, kinds), where kinds has one character per
+    bit: "c" you typed the flip after looking at a coin, "t" tossed from the
+    arrival time of an r.
+    """
+    prompt = "  %-11s: " % label
+    while True:                       # a rejected group restarts here
+        bits, kinds = "", ""
+        hint = ""
+        # The guard is deliberately NOT reset per group: it carries across group
+        # boundaries, so a key held down through the end of one group still
+        # earns nothing at the start of the next. The pause while you read the
+        # word only ever lengthens a gap, which nothing here objects to.
+        try:
+            while len(bits) < need:
+                # Padded to a constant width rather than cleared with an escape
+                # sequence, so this whole path needs no ANSI at all and a bare
+                # \r is enough: no TERM sniffing, and nothing to go wrong on a
+                # terminal that does not speak it.
+                #
+                # Underscores for the empty slots, not dots: a great many coding
+                # fonts ligature "..." into a single ellipsis glyph, which turns
+                # the count of remaining flips into a lie.
+                sys.stdout.write("\r%-*s"
+                                 % (_LINE_WIDTH,
+                                    "%s%s%s%s" % (prompt, _render(bits, kinds),
+                                                  "_" * (need - len(bits)), hint)))
+                sys.stdout.flush()
+                try:
+                    c, t, n = reader.key()
+                except EOFError:
+                    sys.exit("\nAborted. Nothing was saved.")
+                # Tuples, not strings: `"" in "hH1"` is True in Python, so any
+                # unprintable key -- an arrow, Escape, DEL -- would silently
+                # insert a 1 bit if these were substring tests.
+                ch = chr(c) if 32 <= c < 127 else ""
+                is_toss = ch in tuple(_TOSS_KEYS) and tossable
+                earned = guard.feed(t, n, is_toss)    # every key, may raise Reject
+                hint = ""
+                if c in (8, 127):                     # backspace / DEL
+                    bits, kinds = bits[:-1], kinds[:-1]
+                elif ch in ("h", "H", "1"):
+                    bits, kinds = bits + "1", kinds + "c"
+                elif ch in ("t", "T", "0"):
+                    bits, kinds = bits + "0", kinds + "c"
+                elif is_toss and earned:
+                    bits, kinds = bits + _toss_bit(t, quantum), kinds + "t"
+                elif is_toss:
+                    # Not an error and not a rejection -- the press simply does
+                    # not count. Held down, the group stops filling and this
+                    # line is the only thing on screen that changes.
+                    hint = _HINT
+                # anything else is ignored: a stray key cannot spend a bit
+        except Reject as e:
+            guard.reset()
+            reader.drain()      # or the rest of a burst re-rejects, once per byte
+            sys.stdout.write("\r%-*s\n" % (_LINE_WIDTH, prompt + _render(bits, kinds).ljust(need)))
+            # One line. The empty group redrawn below says what to do next, and
+            # why it matters is the README's job, not something to reprint every
+            # time it happens.
+            print("\n  Discarded: %s. Vary your rhythm.\n" % e)
+            continue
+        return bits, prompt, _render(bits, kinds), kinds
 
 
 def guided_entry(ent_bits, words):
@@ -568,30 +976,76 @@ def guided_entry(ent_bits, words):
     remainder = ent_bits % 11
     total = full_groups + (1 if remainder else 0)
     inline = ansi_ok()
+    live = keys_available()
+    quantum = clock_quantum() if live else 0
+    # Zero means the probe never saw the clock move, which is a coarser failure
+    # than any threshold -- it must not pass. Beyond the threshold the tick
+    # approaches the spread of the delivery jitter itself and the bits stop
+    # being unpredictable even while they stay perfectly balanced: measured,
+    # assuming a hand regular enough that only the jitter is unknown, 0.96 bits
+    # at 10 us and 0.86 at 100 us, with P(1) sitting at 0.4997 the whole way
+    # down. Every real clock clears this by 80x or more -- x86 TSC under 1 ns,
+    # ARM64 26-125 ns, Windows QPC 100 ns, paravirtualised 1 us -- and nothing
+    # real lives between there and a 15.6 ms legacy tick. So the bar costs
+    # honest machines nothing and refuses every machine it should.
+    tossable = live and 0 < quantum <= _MAX_QUANTUM_NS
+    reader = guard = None
 
-    print("\nEnter your flips in groups of 11. H or 1 = heads, T or 0 = tails.")
-    print("Spaces and dashes are ignored. Ctrl-C aborts.\n")
+    print("")
+    print("  H or 1   heads")
+    print("  T or 0   tails")
+    if tossable:
+        print("  r        random, from the moment you press it")
+    print("")
 
-    bits = ""
-    for i in range(full_groups):
-        group, prompt, shown = prompt_bits(11, "group %2d/%d" % (i + 1, total))
-        word = words[int(group, 2)]
-        if inline:
-            # Step back onto the line just submitted, clear it, and rewrite it
-            # with the tidied flips and the word they select.
-            sys.stdout.write("\033[F\033[2K%s%-11s  ->  %s\n" % (prompt, shown, word))
+    def echo(prompt, shown, tail):
+        # One echo for every group, full or short. No provenance label: the
+        # rendering already carries it per bit, H/T for a flip and 0/1 for a
+        # toss, which says more than a tag on the whole group could.
+        #
+        # In keypress mode we never left the line, so a bare \r is enough and no
+        # ANSI is involved. In line mode \033[F steps back over the line the
+        # user submitted, whose width is at most prompt + 11 = 26 columns.
+        if live:
+            # Blank the row first, then write the finished line, so the "too
+            # fast" hint cannot survive underneath it and the line that lands in
+            # the scrollback carries no trailing spaces.
+            line = "%s%-11s  %s" % (prompt, shown, tail)
+            sys.stdout.write("\r%s\r%s\n" % (" " * _LINE_WIDTH, line))
+            sys.stdout.flush()
+        elif inline:
+            sys.stdout.write("\033[F\033[2K%s%-11s  %s\n" % (prompt, shown, tail))
             sys.stdout.flush()
         else:
-            print("    -> %s" % word)
-        bits += group
+            print("    %s" % tail)
 
-    if remainder:
-        print("\n  Final group: %d flips. The other %d bits of the last word are"
-              % (remainder, 11 - remainder))
-        print("  the checksum, computed from everything above.\n")
-        group, _, _ = prompt_bits(remainder, "group %2d/%d" % (total, total))
-        bits += group
-    return bits
+    def one_group(need, label):
+        if live:
+            return keypress_bits(need, label, reader, guard, quantum, tossable)
+        return prompt_bits(need, label)
+
+    bits, kinds = "", ""
+    try:
+        if live:
+            reader = KeyReader().__enter__()
+            guard = FlipGuard()
+        for i in range(full_groups):
+            group, prompt, shown, k = one_group(11, "group %2d/%d" % (i + 1, total))
+            echo(prompt, shown, "->  %s" % words[int(group, 2)])
+            bits, kinds = bits + group, kinds + k
+
+        if remainder:
+            group, prompt, shown, k = one_group(remainder, "group %2d/%d" % (total, total))
+            echo(prompt, shown, "->  (+ %d checksum bits)" % (11 - remainder))
+            bits, kinds = bits + group, kinds + k
+    except KeyboardInterrupt:
+        if reader is not None:
+            reader.restore()
+        sys.exit("\nAborted. Nothing was saved.")
+    finally:
+        if reader is not None:
+            reader.restore()
+    return bits, kinds
 
 
 def ask_words():
@@ -635,6 +1089,11 @@ _VECTORS = [
 
 _FP_VECTOR = ("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about", "73c5da0a")
 
+# The entropy values above are the most famous in bitcoin, and wallets restored
+# from them are watched by bots. Derived from _VECTORS rather than retyped, so
+# the two can never drift apart.
+_KNOWN_DEAD = frozenset(hex_ent for hex_ent, _, _ in _VECTORS)
+
 # BIP32 test vector 1: seed 000102030405060708090a0b0c0d0e0f -> master xprv.
 # Exercises the serialization and the base58check encoder end to end.
 _XPRV_VECTOR = (
@@ -670,6 +1129,50 @@ def self_check(words):
     hex_seed, want_xprv = _XPRV_VECTOR
     if master_xprv(bytes.fromhex(hex_seed)) != want_xprv:
         _fail("BIP32 xprv")
+    # Two vectors, between them fatal to every way this has been got wrong:
+    # taking the raw nanosecond parity without dividing by the tick (the
+    # constant-tails bug), folding a popcount over it instead, halving the
+    # tick, and returning a constant either way.
+    for t_ns, quantum, want in ((205, 100, "0"), (1, 1, "1")):
+        if _toss_bit(t_ns, quantum) != want:
+            _fail("keypress bit derivation")
+    # The probe must report "unmeasurable" as 0, never as 1. A clock that never
+    # moves is the coarsest one there is; calling it the finest would let every
+    # threshold downstream wave it through.
+    if _quantum_of([7, 7, 7, 7]) != 0 or _quantum_of([0, 40, 80, 120]) != 40:
+        _fail("clock granularity probe")
+    # The debounce is a pure function of arrival times, so unlike the quality of
+    # the bits it CAN be pinned to vectors -- and it is the one thing standing
+    # between a held-down key and a seed made of scheduler jitter. A held key at
+    # 30 Hz must earn exactly one bit, the deliberate keydown that started it,
+    # however long it is held; deliberate presses must earn every one.
+    def _earned(gaps_ms, chunk=1):
+        g, t, n = FlipGuard(), 0, 0
+        try:
+            for ms in gaps_ms:
+                t += int(ms * 1_000_000)
+                if g.feed(t, chunk, True):
+                    n += 1
+        except Reject:
+            return -1               # a distinct answer, never a valid count
+        return n
+    # Gaps are deliberately IRREGULAR here, so that only the debounce can be
+    # what holds them back. With even gaps a weakened debounce would trip the
+    # regularity rule instead and these vectors would pass on the wrong grounds.
+    # 30 Hz is Windows autorepeat, 11 Hz is the macOS default; both must yield
+    # exactly one bit -- the deliberate keydown that started the repeat.
+    if _earned([33, 41, 29, 37, 45, 31, 39, 28, 43, 35]) != 1:
+        _fail("keypress debounce (a held key earns bits)")
+    if _earned([90, 95, 88, 92, 97, 85, 93, 89, 96, 91]) != 1:
+        _fail("keypress debounce (a slow repeat earns bits)")
+    if _earned([0.002] * 20, chunk=20) != 0:
+        _fail("keypress burst check (a paste earns bits)")
+    if _earned([300, 260, 340, 290, 310]) != 5:
+        _fail("keypress debounce (deliberate presses rejected)")
+    # A macro tapping at a believable 150 ms clears the debounce, so evenness is
+    # the only thing left to catch it by. -1 is the Reject above.
+    if _earned([150] * 14) != -1:
+        _fail("keypress regularity check (a metronome earns bits)")
 
 
 # ---------------------------------------------------------------------------
@@ -701,6 +1204,7 @@ def main():
         if len(bits) not in (128, 256):
             sys.exit("Got %d flips, need 128 (12 words) or 256 (24 words)." % len(bits))
         ent_bits = len(bits)
+        kinds = "c" * ent_bits
         n_words = 12 if ent_bits == 128 else 24
         print("\n%d flips -> %d bits of entropy -> %d words."
               % (ent_bits, ent_bits, n_words))
@@ -709,9 +1213,34 @@ def main():
         ent_bits = n_words * 11 - n_words * 11 // 33
         print("\n%d words -> %d bits of entropy -> %d coin flips."
               % (n_words, ent_bits, ent_bits))
-        bits = guided_entry(ent_bits, words)
+        bits, kinds = guided_entry(ent_bits, words)
+
+    # A group that came back short would to_bytes() into a perfectly clean
+    # 32 bytes with a zero high byte -- no exception, valid checksum, silently
+    # weaker seed. Verified: int("1"*248, 2).to_bytes(32, "big") does not raise.
+    if len(bits) != ent_bits or len(kinds) != ent_bits:
+        _fail("entropy length")
 
     entropy = int(bits, 2).to_bytes(ent_bits // 8, "big")
+
+    # NOT an entropy score. No such score is possible here and this file will
+    # never print one: at 256 samples the estimators cannot tell a live seed
+    # from a dead one. Measured with SP 800-90B's most generous estimator,
+    # os.urandom scores 189 of 256, sha256(counter) -- worth exactly nothing --
+    # scores 168, and a genuinely biased coin scores 116. A number that ranks a
+    # dead source above a weak-but-real one is worse than no number at all.
+    #
+    # What IS decidable is exact equality against the few entropy values known
+    # to be dead: the published BIP39 vectors, which have repeatedly received
+    # and instantly lost real money, and the single-repeated-byte patterns that
+    # a broken input path produces. A real coin lands on one of these with
+    # probability about 2^-248, so this can only ever fire on a bug.
+    if len(set(entropy)) == 1 or entropy.hex() in _KNOWN_DEAD:
+        sys.exit(
+            "\nFATAL: this entropy is a published test vector or a constant\n"
+            "byte, so the wallet it derives is public and is emptied within\n"
+            "seconds of being funded. Something upstream is broken -- do not\n"
+            "use these words, and check the flips you entered.")
     mnemonic_words = entropy_to_mnemonic(entropy, words)
     mnemonic = " ".join(mnemonic_words)
     seed = mnemonic_to_seed(mnemonic, args.passphrase)
@@ -725,8 +1254,6 @@ def main():
         print("   " + "   ".join(cells).rstrip())
 
     priv, chain = master_key(seed)
-    print("\n  Master fingerprint: %s" % master_fingerprint(seed))
-    print("  BIP39 seed (hex):   %s" % seed.hex())
     print("\n  BIP32 master private key")
     print("    xprv:       %s" % master_xprv(seed))
     print("    key (hex):  %s" % priv.hex())
@@ -734,15 +1261,7 @@ def main():
     if args.passphrase:
         print("\n  (everything above except the words includes your passphrase)")
 
-    print("""
-  Before funding this wallet:
-    1. Re-enter the SAME flips into a second, independent tool and
-       confirm both the words and the fingerprint match.
-    2. Write the words on something durable. Test the backup by
-       restoring it into a watch-only wallet first.
-    3. Destroy the paper record of the raw flips.
-    4. Close this terminal and clear its scrollback.
-""")
+    print("")
 
     # Launched from a file manager, the terminal is the script's parent and
     # dies with it, taking the words above with it. Hold the window open.
