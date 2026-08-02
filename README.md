@@ -59,7 +59,7 @@ A broken RNG and a good one are indistinguishable from their output, so you cann
 
 256 coin flips need none of that. They are 256 bits because the coin does not know either, and no amount of computation recovers what was never determined. No cipher to break, no pool to have been empty at boot. Which matters most in exactly the situation this tool is for: a freshly booted airgapped machine or a live USB, where the pool is youngest and the historical failure rate is highest.
 
-The `r` key is physical entropy too. The bit comes from the nanosecond that your finger landed, not from a state machine, and it is read through this machine's clock — so the script measures that clock before it will accept a single press, and refuses to toss at all if the tick is too coarse to carry a bit.
+The `r` key is physical entropy too. The bit comes from the nanosecond that your finger landed, not from a state machine, and it is read through your machine's clock — so the script measures that clock before it will accept a single press, and refuses to toss at all if the tick is too coarse to carry a bit.
 
 ## License
 
