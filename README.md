@@ -21,9 +21,7 @@ python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 
 Run bare and it asks for 12 or 24 words, then takes your flips in groups of 11,
 naming each word as its group completes. Or pass the whole string — 128 or 256
-flips, H/1 = heads, T/0 = tails.
-
-Either way it then asks for a passphrase — the BIP39 25th word, blank for none. It is shown as you type, because a passphrase has no checksum: a typo does not fail, it quietly derives a wallet that is not yours.
+flips, H/1 = heads, T/0 = tails. It then asks for a passphrase (the BIP39 25th word).
 
 One flip is one bit.
 
