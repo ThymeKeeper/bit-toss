@@ -46,8 +46,12 @@ what you check against a second tool.
 If you pass a passphrase, the `xprv` reflects it and the words do not.
 
 In guided mode you enter 11 flips at a time and each complete group reveals its
-word immediately, so you can follow along on paper. The final group is short —
-the remaining bits of the last word are the BIP39 checksum.
+word immediately, so you can follow along on paper. The final group is short,
+because the missing bits of the last word are the BIP39 checksum — computed from
+everything above, which is why that word can only be named once the last flip is
+in. Those running reveals are the whole phrase, so guided mode does not reprint
+it at the end; passing flips as an argument does, since there is no commentary
+to have read.
 
 At a real terminal, keys are read one at a time, so a flip lands the moment you
 press it and backspace takes it back.

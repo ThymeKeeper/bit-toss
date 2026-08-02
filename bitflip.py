@@ -992,8 +992,12 @@ def guided_entry(ent_bits, words):
 
         if remainder:
             group, prompt, shown, k = one_group(remainder, "group %2d/%d" % (total, total))
-            echo(prompt, shown, "->  (+ %d checksum bits)" % (11 - remainder))
             bits, kinds = bits + group, kinds + k
+            # The last word is short of a full group because the missing bits
+            # are the checksum, which is a function of everything above -- so it
+            # can only be named once the final flip is in, which it now is.
+            echo(prompt, shown, "->  %s" % entropy_to_mnemonic(
+                int(bits, 2).to_bytes(ent_bits // 8, "big"), words)[-1])
     except KeyboardInterrupt:
         if reader is not None:
             reader.restore()
@@ -1199,13 +1203,19 @@ def main():
     mnemonic = " ".join(mnemonic_words)
     seed = mnemonic_to_seed(mnemonic, args.passphrase)
 
-    print("\n" + "=" * 64)
-    print("  YOUR SEED PHRASE -- anyone who sees this owns your coins")
-    print("=" * 64 + "\n")
-    rows = len(mnemonic_words) // 3
-    for r in range(rows):
-        cells = ["%2d. %-8s" % (c * rows + r + 1, mnemonic_words[c * rows + r]) for c in range(3)]
-        print("   " + "   ".join(cells).rstrip())
+    # Guided entry already named every word as its group was completed, so
+    # printing them again is just the same secret on screen twice. From an
+    # argument there was no such running commentary, and this is the only place
+    # the words appear at all.
+    if args.flips:
+        print("\n" + "=" * 64)
+        print("  YOUR SEED PHRASE -- anyone who sees this owns your coins")
+        print("=" * 64 + "\n")
+        rows = len(mnemonic_words) // 3
+        for r in range(rows):
+            cells = ["%2d. %-8s" % (c * rows + r + 1, mnemonic_words[c * rows + r])
+                     for c in range(3)]
+            print("   " + "   ".join(cells).rstrip())
 
     priv, chain = master_key(seed)
     print("\n  BIP32 master private key")
