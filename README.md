@@ -2,17 +2,12 @@
 
 Derive a bitcoin BIP39 seed phrase from physical coin flips.
 
-You flip a coin, you type H or T, you get the words. No library you have to
-trust, no dependencies — Python 3.8+ standard library only, single file, no
-network access, nothing written to disk.
+You flip a coin, you type H or T, you get the words. Single file, Python 3.8+
+standard library only, no dependencies, no network access, nothing written to
+disk. It never calls `os.urandom`, `secrets` or `random` — every bit of a seed
+it produces came from a coin or from your fingers.
 
-No RNG either. Not "no RNG by default" — this file never calls `os.urandom`,
-`secrets` or `random` at all. Every bit of a seed it produces came from a coin
-or from your fingers; see
-[When you don't want to flip 256 times](#when-you-dont-want-to-flip-256-times).
-
-**Run this on an airgapped machine.** A seed phrase typed into a networked
-computer is a seed phrase you should assume is compromised.
+**Run this on an airgapped machine.**
 
 screenshot:
 <img width="1383" height="1559" alt="1" src="https://github.com/user-attachments/assets/fc635121-7b38-4240-8950-f8a71b58e68f" />
@@ -24,192 +19,60 @@ python3 bitflip.py                   # interactive, guided entry
 python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 ```
 
-Run bare and the script asks whether you want a 12- or 24-word seed, then takes
-your flips in groups of 11. Or pass the whole flip string as an argument —
-128 or 256 flips, H/1 = heads, T/0 = tails, whitespace and dashes ignored —
-and the word count is inferred from the length.
+Run bare and it asks for 12 or 24 words, then takes your flips in groups of 11,
+naming each word as its group completes. Or pass the whole string — 128 or 256
+flips, H/1 = heads, T/0 = tails, whitespace and dashes ignored.
 
-Other flags: `--passphrase` (BIP39 25th word).
+`--passphrase` adds a BIP39 25th word.
 
-Every derivation prints:
-
-- the 12–24 mnemonic words
-- the BIP32 master private key, as an importable `xprv...`, plus the raw
-  32-byte key and chain code in hex
-
-These are the same secret in two notations. The `xprv` is the actual private key
-the mnemonic expands into — everything in the wallet derives from it, so it is
-exactly as dangerous as the words and deserves the same handling. It is also
-what you check against a second tool.
-
-If you pass a passphrase, the `xprv` reflects it and the words do not.
-
-In guided mode you enter 11 flips at a time and each complete group reveals its
-word immediately, so you can follow along on paper. The final group is short,
-because the missing bits of the last word are the BIP39 checksum — computed from
-everything above, which is why that word can only be named once the last flip is
-in. Those running reveals are the whole phrase, so guided mode does not reprint
-it at the end; passing flips as an argument does, since there is no commentary
-to have read.
-
-At a real terminal, keys are read one at a time, so a flip lands the moment you
-press it and backspace takes it back.
-
-## When you don't want to flip 256 times
-
-Press **`r`** instead of typing a flip. It takes the nanosecond your finger
-arrived and keeps one bit of it.
-
-**You have to press it deliberately.** An `r` only counts if the preceding
-100 ms contained no keystroke at all. Hold the key down and the repeats earn
-nothing — the group simply stops filling and the line says `too fast, press r
-slowly` until you let go. A paste is refused the same way, and structurally too:
-its characters all arrive in a single `read()`, which is proof they were queued
-rather than pressed.
-
-That debounce measures from the last keystroke of *any* kind, not the last one
-that counted, and the distinction is the whole mechanism. Debouncing against the
-last accepted press would let a key repeating every 33 ms have every other
-repeat accepted — a decimated 15 Hz stream that is *more* regular than what it
-came from and just as much the scheduler's work.
-
-Nothing here can discard work. A press either counts or is ignored, so the
-worst a stuck key or a paste can do is fail to fill the group — visible on the
-line, and fixed the moment you let go.
-
-An earlier version also rejected an even *rhythm*, on the theory that a
-metronome meant a macro. That was wrong arithmetic: 10 % of a 150 ms gap is
-15 million nanoseconds, and the low bit of the tick count needs a few
-nanoseconds of spread to be uniform, so it was discarding bits with a million
-times the variation they required. Measured, a metronome pressing at exactly
-120 ms — spin-timed so the press instant is known to the nanosecond — still
-yields 0.9564 bits per press against an ideal source's 0.9559. There was
-nothing to catch, and a human tapping steadily tripped it.
-
-Why guard held keys at all, given that they still measure 0.87–0.92 bits per
-press? Because of *where those bits come from*, not how many there are. Nobody
-can put a pattern into a nanosecond — tty delivery jitter is ~92 µs and parity
-only degrades below ~10 ns of jitter, a margin of ten thousand — so a held key
-does produce unpredictable bits. They are just the **scheduler's**
-unpredictability rather than yours: interrupt timing on this particular machine,
-which is the one thing this tool is built to avoid having to trust. The debounce
-keeps your hand in the loop. It is not there because held-key bits are worthless;
-it is there because they are the machine's.
-
-That reasoning is also its limit. It justifies rejecting a key you are not
-pressing; it does not justify rejecting one you are.
-
-It also measures the clock's true tick before the first toss and divides by it,
-and refuses to toss at all if the tick is coarser than 10 µs or if it cannot
-measure one. Without that step, on a 100 ns clock — ordinary Windows QPC, WSL2,
-most VMs — every raw nanosecond is even, every toss comes out tails, and you get
-`abandon abandon … art` with a checksum every wallet accepts. The bit is taken
-as the low bit of the tick count *precisely because* that is how it fails: if
-the measurement is ever wrong, you get a screen full of zeros rather than
-plausible-looking bits that are worth nothing.
-
-## How many flips?
-
-One flip is one bit. A 24-word seed is 256 bits of entropy, so 256 flips; a
-12-word seed is 128. The checksum bits are computed, not flipped.
-
-(One *coin flip* is one bit. One `r` press is also charged as one bit, but that
-is a deliberate 8× under-claim: a keypress arrival time carries something like
-8–11 bits of measurable jitter and the tool takes one of them. Under-claiming is
-the whole reason it is safe.)
+One flip is one bit. The checksum bits are computed, not flipped.
 
 | words | entropy | flips |
 |-------|---------|-------|
 | 12    | 128     | 128   |
 | 24    | 256     | 256   |
 
-## Verify before you fund anything
+Press **`r`** instead of typing a flip and it takes the nanosecond your finger
+arrived, keeping one bit of it. Held keys and pastes earn nothing.
 
-One tool agreeing with itself proves nothing. Re-enter the *same* flips into a
-second, independent implementation — SeedSigner, Coldcard, an offline copy of
-Ian Coleman's BIP39 tool — and confirm that both the words **and** the `xprv`
-match.
+It prints the words and the BIP32 master private key as an importable `xprv`.
+Those are the same secret in two notations — the `xprv` is exactly as dangerous
+as the words. Everything except the words reflects your passphrase.
 
-Then:
+## Why human entropy
 
-1. Write the words on something durable.
-2. Test the backup by restoring it into a watch-only wallet before sending funds.
-3. Destroy the paper record of the raw flips.
-4. Close the terminal and clear its scrollback.
+A CSPRNG's output is a deterministic function of its seed. `os.urandom(32)` is
+256 bits *if* the kernel's entropy pool was properly seeded and *if* ChaCha20 is
+a pseudorandom function. Both are assumptions. The second is a good one. The
+first is where the money has actually gone:
 
-Tossed bits have no paper record — nothing exists before the tool runs — so
-there is nothing to re-enter. Check those seeds forwards instead: restore the
-words in a second tool and confirm it derives the same `xprv`. That verifies
-this file's BIP39 and BIP32 arithmetic against an independent implementation,
-which is worth doing, but unlike the coin-flip case it cannot vouch for where
-the bits came from.
+- **Debian OpenSSL, 2008** — a removed line narrowed the keyspace to 32,767
+  possibilities, for every key generated over two years.
+- **Android `SecureRandom`, 2013** — bitcoin wallets generated colliding
+  signature nonces and were swept.
+- **Mining Your Ps and Qs, 2012** — boot-time entropy starvation left tens of
+  thousands of TLS and SSH hosts sharing factorable keys.
+- **Milk Sad, 2023** — `libbitcoin-explorer` seeded a Mersenne Twister with a
+  32-bit timestamp. Millions of dollars, from a tool whose whole job was seeds.
 
-## What's in the file
+Every one of those produced output that passes every statistical test there is.
+That is the point: a broken RNG and a good one are indistinguishable from their
+output, so you cannot test your way to trust, and you cannot audit an RNG at
+runtime — you can only read the code and hope it is the code that ran.
 
-Everything needed is inlined so the script can run with no installs on an
-offline machine:
+256 coin flips need none of that. They are 256 bits because the coin does not
+know either, and no amount of computation recovers what was never determined.
+No cipher to break, no pool to have been empty at boot. Which matters most in
+exactly the situation this tool is for: a freshly booted airgapped machine or a
+live USB, where the pool is youngest and the historical failure rate is highest.
 
-- the full 2048-word BIP39 English wordlist, checked against a SHA-256 digest at
-  startup so a tampered copy refuses to run
-- a pure-Python RIPEMD-160, because OpenSSL 3.x moved it to the legacy provider
-  and `hashlib` usually can't supply it
-- just enough secp256k1 to turn the BIP32 master key into a compressed public
-  key, which the startup self-check needs to verify its own derivation
-- BIP32 master key derivation and base58check, for the `xprv`
-- a single-keypress reader (`termios` on Unix, `msvcrt` on Windows) that keeps
-  `ISIG` set so Ctrl-C is still generated by the terminal driver rather than by
-  us, and restores the terminal on every exit path including Ctrl-Z
-
-## Why there is no entropy score
-
-A number at the end saying how random your seed is would be the most reassuring
-thing this tool could print, and it would be a lie. Not "imprecise" — actively
-inverted. Scoring 256-bit samples with SP 800-90B's *most generous* estimator:
-
-| source | actual entropy | score |
-|--------|---------------|-------|
-| `os.urandom` | 256 bits | **189** |
-| biased coin, p(1) = 0.6 | ~194 bits | **117** |
-| `sha256(counter)` | **0 bits** | **168** |
-
-A source worth exactly nothing outscores a real but slightly biased one, and a
-perfect source scores 189 rather than 256 because at n = 256 the sampling error
-alone is larger than the entire gap between a good seed and a dead one. SP
-800-90B asks for a million samples; a seed gives you 256. There is no estimator,
-however clever, that fixes this — the information simply is not there.
-
-Worse, the failures that actually matter are the ones no test can see. A held-
-down `r` key measures 0.87–0.92 bits per press and passes everything, while the
-person made one decision instead of 256. `sha256(counter)` passes dieharder,
-monobit, chi-square and every compressor. The one and only defence against those
-is knowing *where each bit came from*, which is why the tool counts provenance
-instead of scoring randomness.
-
-What it does check is exact equality against entropy already known to be dead —
-the published BIP39 vectors, whose wallets are watched by bots and emptied on
-funding, and constant-byte patterns that only a broken input path produces. That
-is a bug detector, not a measurement: a real coin lands on one of those with
-probability about 2⁻²⁴⁸, so it can only ever fire on a fault.
-
-There is likewise deliberately **no statistical test** on the tossed bits.
-Hashing does not create entropy — SHA-256 of a 20-bit source still has 20 bits
-of it, and still passes monobit, chi-square, dieharder and every compressor. And
-a test could not tell you the thing you want to know anyway: a held-down key and
-a deliberate one both measure around 0.9 bits per press, because the difference
-between them is not in the numbers, it is in whose unpredictability they are.
-The guards are structural for that reason — they check that the keypresses
-happened, which is decidable — and the provenance count is the honest substitute
-for a green tick.
-
-Before it will take a single flip, the script derives the published BIP39 and
-BIP32 test vectors and refuses to run if any of them come out wrong. This is not
-optional and there is no flag for it, because the failure it guards against is
-invisible. A wallet checks the words you type into it — that they are real
-wordlist entries and that the checksum matches — so a bug in the path that
-produces the words gets caught the moment you restore. Nothing checks what
-happens after. A broken PBKDF2 or BIP32 would still hand you a phrase every
-wallet accepts, while the `xprv` printed alongside it quietly
-belonged to a different wallet.
+The `r` key sits between the two. Its bit is physical — it comes from when your
+finger landed, not from a state machine — but it reaches the seed through this
+machine's clock and scheduler, which is one more thing to trust. Measured on
+bare metal, the bit needs about 3 ns of unpredictable spread to be uniform, the
+delivery path alone supplies 43,000–73,000 ns, and a real 256-press run had
+184 ms of cadence spread. The margin is four to eight orders of magnitude. But
+it is a margin measured on a machine, and a coin's is not.
 
 ## License
 
