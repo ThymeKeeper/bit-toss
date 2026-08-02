@@ -645,10 +645,6 @@ def _toss_bit(t_ns, quantum):
     return "1" if (t_ns // quantum) & 1 else "0"
 
 
-class Reject(Exception):
-    """A run of keypresses that this program is not willing to call flips."""
-
-
 _MAX_QUANTUM_NS = 10_000       # 10 us. Coarser and the bits stop being
                                #   unpredictable while still looking balanced,
                                #   and the probe itself stops being able to
@@ -658,8 +654,6 @@ _DEBOUNCE_NS = 100_000_000     # 100 ms of silence required before an r counts.
                                #   Windows 30 Hz (33 ms), X11 25 Hz (40 ms),
                                #   macOS 11 Hz (90 ms). Below a deliberate
                                #   press, which is 3-8 Hz.
-_REG_WINDOW = 10               # accepted gaps per regularity window
-_REG_RATIO = 0.10              # observed: autorepeat p99 = 0.026, human >> 1
 _HINT = "   too fast, press r slowly"
 # Prompt (15) + the widest group (11) + the hint. Every live redraw is padded to
 # this, so one line can never leave a fragment of a longer one behind it.
@@ -669,27 +663,26 @@ _LINE_WIDTH = 15 + 11 + len(_HINT)
 class FlipGuard:
     """Decides which keypresses this program is willing to call flips.
 
-    It does not check the bits, and could not usefully. Parity is fine even
-    when the feature is abused -- a key held down at 33 Hz still measures 0.92
-    bits per press, because tty delivery jitter is ~92 us and parity only
-    degrades below ~10 ns of jitter, a 10,000x margin. That is precisely the
-    danger: a held key produces statistically perfect bits out of the OS
-    scheduler while the user believes they made 256 decisions. It has to be
-    caught at the moment of arrival or not at all.
+    One rule, a debounce, and the subtlety is what it debounces AGAINST.
+    Measuring from the last ACCEPTED press does not work: a key repeating every
+    33 ms against a 50 ms debounce simply has every other repeat accepted,
+    yielding a decimated 15 Hz stream just as much the scheduler's as the one it
+    came from. Measuring from the last press of ANY key, accepted or not, kills
+    it outright -- while a key is down there is never 100 ms of silence in front
+    of a press, so not one bit is taken and the group stops filling. The same
+    disposes of a paste, whose characters arrive microseconds apart.
 
-    The main defence is a debounce, and the subtlety is what it debounces
-    AGAINST. Measuring from the last ACCEPTED press does not work: a key
-    repeating every 33 ms against a 50 ms debounce simply has every other
-    repeat accepted, yielding a decimated 15 Hz stream that is *more* regular
-    than what it came from and just as much the scheduler's. Measuring from the
-    last press of ANY key, accepted or not, kills it outright -- while a key is
-    down there is never 100 ms of silence in front of a press, so not one bit
-    is ever taken and the group simply stops filling. The same disposes of a
-    paste, whose characters arrive microseconds apart.
-
-    That leaves one thing a debounce cannot see: a macro tapping r at a
-    believable but perfectly even 150 ms. Hence the regularity check, which is
-    the only rule here that discards a group rather than ignoring a keystroke.
+    There is deliberately no check for even RHYTHM, and the arithmetic is why.
+    A version of this file rejected ten presses falling within 10% of each
+    other, on the theory that a metronome meant a macro. But 10% of a 150 ms gap
+    is 15 million nanoseconds, and the low bit of the tick count needs a few
+    nanoseconds of spread to be uniform -- so it was throwing away bits with a
+    million times the variation they required. Measured, a metronome pressing at
+    exactly 120 ms, spin-timed so the press instant is known to the nanosecond,
+    still yields 0.9564 bits per press against an ideal source's 0.9559. There
+    is nothing there to catch. Meanwhile a human tapping one key steadily trips
+    it, and the cost of that is a discarded group. Held keys and pastes are real
+    and are handled below; even rhythm was not.
     """
 
     def __init__(self):
@@ -697,8 +690,6 @@ class FlipGuard:
 
     def reset(self):
         self.last_key = None       # ANY key, whether or not it earned a bit
-        self.last_ok = None        # last press actually taken as a bit
-        self.win = []
 
     def feed(self, t_ns, chunk_len, is_toss):
         """Called once for EVERY keystroke. True only if this one earned a bit.
@@ -720,24 +711,7 @@ class FlipGuard:
         # is a paper record being transcribed. A pasted r is not the same thing.)
         if chunk_len > 1:
             return False
-        if prev is not None and t_ns - prev < _DEBOUNCE_NS:
-            return False
-        if self.last_ok is not None:
-            self.win.append(t_ns - self.last_ok)
-            if len(self.win) > _REG_WINDOW:
-                self.win.pop(0)
-            if len(self.win) == _REG_WINDOW:
-                med = sorted(self.win)[_REG_WINDOW // 2]
-                spread = (max(self.win) - min(self.win)) / med if med else 0
-                if spread < _REG_RATIO:
-                    # Stated as an observation about the timing, not a verdict
-                    # about the person. Falling into a rhythm while tapping one
-                    # key is an easy and honest thing to do, and the fix is the
-                    # same either way.
-                    raise Reject("%d presses within %.1f%% of %.0f ms apart"
-                                 % (_REG_WINDOW, 100 * spread, med / 1e6))
-        self.last_ok = t_ns
-        return True
+        return prev is None or t_ns - prev >= _DEBOUNCE_NS
 
 
 def keys_available():
@@ -834,15 +808,6 @@ class KeyReader:
         if self._saved is not None:
             self._set(self._cbreak)
 
-    def drain(self):
-        """Throw away anything already typed ahead but not yet consumed."""
-        self._buf = []
-        if os.name != "nt" and self._saved is not None:
-            try:
-                self._termios.tcflush(self._fd, self._termios.TCIFLUSH)
-            except Exception:
-                pass
-
     def key(self):
         """(codepoint, arrival ns, how many bytes arrived in that one read)."""
         if os.name == "nt":
@@ -911,63 +876,54 @@ def keypress_bits(need, label, reader, guard, quantum, tossable):
     arrival time of an r.
     """
     prompt = "  %-11s: " % label
-    while True:                       # a rejected group restarts here
-        bits, kinds = "", ""
-        hint = ""
-        # The guard is deliberately NOT reset per group: it carries across group
-        # boundaries, so a key held down through the end of one group still
-        # earns nothing at the start of the next. The pause while you read the
-        # word only ever lengthens a gap, which nothing here objects to.
+    bits, kinds, hint = "", "", ""
+    # The guard is deliberately NOT reset per group: it carries across group
+    # boundaries, so a key held down through the end of one group still earns
+    # nothing at the start of the next. The pause while you read the word only
+    # ever lengthens a gap, which nothing here objects to.
+    #
+    # Nothing in this loop can discard work. A press either counts or is
+    # ignored, so the worst a stuck key or a paste can do is fail to fill the
+    # group, which is visible on the line and fixes itself the moment you let go.
+    while len(bits) < need:
+        # Padded to a constant width rather than cleared with an escape
+        # sequence, so this whole path needs no ANSI at all and a bare \r is
+        # enough: no TERM sniffing, and nothing to go wrong on a terminal that
+        # does not speak it.
+        #
+        # Underscores for the empty slots, not dots: a great many coding fonts
+        # ligature "..." into a single ellipsis glyph, which turns the count of
+        # remaining flips into a lie.
+        sys.stdout.write("\r%-*s"
+                         % (_LINE_WIDTH,
+                            "%s%s%s%s" % (prompt, _render(bits, kinds),
+                                          "_" * (need - len(bits)), hint)))
+        sys.stdout.flush()
         try:
-            while len(bits) < need:
-                # Padded to a constant width rather than cleared with an escape
-                # sequence, so this whole path needs no ANSI at all and a bare
-                # \r is enough: no TERM sniffing, and nothing to go wrong on a
-                # terminal that does not speak it.
-                #
-                # Underscores for the empty slots, not dots: a great many coding
-                # fonts ligature "..." into a single ellipsis glyph, which turns
-                # the count of remaining flips into a lie.
-                sys.stdout.write("\r%-*s"
-                                 % (_LINE_WIDTH,
-                                    "%s%s%s%s" % (prompt, _render(bits, kinds),
-                                                  "_" * (need - len(bits)), hint)))
-                sys.stdout.flush()
-                try:
-                    c, t, n = reader.key()
-                except EOFError:
-                    sys.exit("\nAborted. Nothing was saved.")
-                # Tuples, not strings: `"" in "hH1"` is True in Python, so any
-                # unprintable key -- an arrow, Escape, DEL -- would silently
-                # insert a 1 bit if these were substring tests.
-                ch = chr(c) if 32 <= c < 127 else ""
-                is_toss = ch in tuple(_TOSS_KEYS) and tossable
-                earned = guard.feed(t, n, is_toss)    # every key, may raise Reject
-                hint = ""
-                if c in (8, 127):                     # backspace / DEL
-                    bits, kinds = bits[:-1], kinds[:-1]
-                elif ch in ("h", "H", "1"):
-                    bits, kinds = bits + "1", kinds + "c"
-                elif ch in ("t", "T", "0"):
-                    bits, kinds = bits + "0", kinds + "c"
-                elif is_toss and earned:
-                    bits, kinds = bits + _toss_bit(t, quantum), kinds + "t"
-                elif is_toss:
-                    # Not an error and not a rejection -- the press simply does
-                    # not count. Held down, the group stops filling and this
-                    # line is the only thing on screen that changes.
-                    hint = _HINT
-                # anything else is ignored: a stray key cannot spend a bit
-        except Reject as e:
-            guard.reset()
-            reader.drain()      # or the rest of a burst re-rejects, once per byte
-            sys.stdout.write("\r%-*s\n" % (_LINE_WIDTH, prompt + _render(bits, kinds).ljust(need)))
-            # One line. The empty group redrawn below says what to do next, and
-            # why it matters is the README's job, not something to reprint every
-            # time it happens.
-            print("\n  Discarded: %s. Vary your rhythm.\n" % e)
-            continue
-        return bits, prompt, _render(bits, kinds), kinds
+            c, t, n = reader.key()
+        except EOFError:
+            sys.exit("\nAborted. Nothing was saved.")
+        # Tuples, not strings: `"" in "hH1"` is True in Python, so any
+        # unprintable key -- an arrow, Escape, DEL -- would silently insert a
+        # 1 bit if these were substring tests.
+        ch = chr(c) if 32 <= c < 127 else ""
+        is_toss = ch in tuple(_TOSS_KEYS) and tossable
+        earned = guard.feed(t, n, is_toss)            # every key goes through
+        hint = ""
+        if c in (8, 127):                             # backspace / DEL
+            bits, kinds = bits[:-1], kinds[:-1]
+        elif ch in ("h", "H", "1"):
+            bits, kinds = bits + "1", kinds + "c"
+        elif ch in ("t", "T", "0"):
+            bits, kinds = bits + "0", kinds + "c"
+        elif is_toss and earned:
+            bits, kinds = bits + _toss_bit(t, quantum), kinds + "t"
+        elif is_toss:
+            # Not an error -- the press simply does not count. Held down, the
+            # group stops filling and this line is the only thing that changes.
+            hint = _HINT
+        # anything else is ignored: a stray key cannot spend a bit
+    return bits, prompt, _render(bits, kinds), kinds
 
 
 def guided_entry(ent_bits, words):
@@ -1148,13 +1104,10 @@ def self_check(words):
     # however long it is held; deliberate presses must earn every one.
     def _earned(gaps_ms, chunk=1):
         g, t, n = FlipGuard(), 0, 0
-        try:
-            for ms in gaps_ms:
-                t += int(ms * 1_000_000)
-                if g.feed(t, chunk, True):
-                    n += 1
-        except Reject:
-            return -1               # a distinct answer, never a valid count
+        for ms in gaps_ms:
+            t += int(ms * 1_000_000)
+            if g.feed(t, chunk, True):
+                n += 1
         return n
     # Gaps are deliberately IRREGULAR here, so that only the debounce can be
     # what holds them back. With even gaps a weakened debounce would trip the
@@ -1169,10 +1122,11 @@ def self_check(words):
         _fail("keypress burst check (a paste earns bits)")
     if _earned([300, 260, 340, 290, 310]) != 5:
         _fail("keypress debounce (deliberate presses rejected)")
-    # A macro tapping at a believable 150 ms clears the debounce, so evenness is
-    # the only thing left to catch it by. -1 is the Reject above.
-    if _earned([150] * 14) != -1:
-        _fail("keypress regularity check (a metronome earns bits)")
+    # An even rhythm above the debounce is fine and must stay fine: 10% of a
+    # 150 ms gap is 15 million ns, and the bit needs a few. Nothing is thrown
+    # away for being regular.
+    if _earned([150] * 14) != 14:
+        _fail("keypress debounce (an even rhythm is penalised)")
 
 
 # ---------------------------------------------------------------------------

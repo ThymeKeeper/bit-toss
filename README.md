@@ -70,14 +70,20 @@ last accepted press would let a key repeating every 33 ms have every other
 repeat accepted — a decimated 15 Hz stream that is *more* regular than what it
 came from and just as much the scheduler's work.
 
-Pressing too fast is never destructive: the keystroke is ignored, not the group.
-Measured over 20 000 simulated sessions, a group is discarded **0.0000 %** of
-the time at every human typing rate. The only rule that discards one is a check
-for *evenness* — ten presses in a row within 10 % of the same interval. That is
-what a repeat timer looks like, but a hand tapping to a beat can drift into it
-too, so it just asks you to vary the rhythm and retype that group.
+Nothing here can discard work. A press either counts or is ignored, so the
+worst a stuck key or a paste can do is fail to fill the group — visible on the
+line, and fixed the moment you let go.
 
-Why guard it at all, given that a held key still measures 0.87–0.92 bits per
+An earlier version also rejected an even *rhythm*, on the theory that a
+metronome meant a macro. That was wrong arithmetic: 10 % of a 150 ms gap is
+15 million nanoseconds, and the low bit of the tick count needs a few
+nanoseconds of spread to be uniform, so it was discarding bits with a million
+times the variation they required. Measured, a metronome pressing at exactly
+120 ms — spin-timed so the press instant is known to the nanosecond — still
+yields 0.9564 bits per press against an ideal source's 0.9559. There was
+nothing to catch, and a human tapping steadily tripped it.
+
+Why guard held keys at all, given that they still measure 0.87–0.92 bits per
 press? Because of *where those bits come from*, not how many there are. Nobody
 can put a pattern into a nanosecond — tty delivery jitter is ~92 µs and parity
 only degrades below ~10 ns of jitter, a margin of ten thousand — so a held key
@@ -86,6 +92,9 @@ unpredictability rather than yours: interrupt timing on this particular machine,
 which is the one thing this tool is built to avoid having to trust. The debounce
 keeps your hand in the loop. It is not there because held-key bits are worthless;
 it is there because they are the machine's.
+
+That reasoning is also its limit. It justifies rejecting a key you are not
+pressing; it does not justify rejecting one you are.
 
 It also measures the clock's true tick before the first toss and divides by it,
 and refuses to toss at all if the tick is coarser than 10 µs or if it cannot
