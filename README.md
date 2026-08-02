@@ -15,8 +15,7 @@ or from your fingers; see
 computer is a seed phrase you should assume is compromised.
 
 screenshot:
-<img width="1104" height="1507" alt="1" src="https://github.com/user-attachments/assets/f491d20c-09fe-4698-aebf-a117c0920e10" />
-
+<img width="1383" height="1559" alt="1" src="https://github.com/user-attachments/assets/fc635121-7b38-4240-8950-f8a71b58e68f" />
 
 ## Usage
 
