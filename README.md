@@ -1,4 +1,4 @@
-# bit-toss
+# bitflip
 
 Derive a bitcoin BIP39 seed phrase from physical coin flips.
 
@@ -20,8 +20,8 @@ screenshot:
 ## Usage
 
 ```
-python3 bit_toss.py                  # interactive, guided entry
-python3 bit_toss.py HTTHHTTH...      # the whole flip string as an argument
+python3 bitflip.py                   # interactive, guided entry
+python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 ```
 
 Run bare and the script asks whether you want a 12- or 24-word seed, then takes

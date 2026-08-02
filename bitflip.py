@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bit_toss.py -- derive a BIP39 mnemonic from physical coin flips.
+bitflip.py -- derive a BIP39 mnemonic from physical coin flips.
 
 Python 3.8+ standard library only. No network. No disk writes.
 
@@ -8,14 +8,14 @@ RUN THIS AIRGAPPED. A seed phrase typed into a networked machine is a
 seed phrase you should assume is compromised.
 
 Usage:
-    python3 bit_toss.py                  # interactive, guided entry
-    python3 bit_toss.py HTTHHTTH...      # the whole flip string as an argument
+    python3 bitflip.py                   # interactive, guided entry
+    python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 
 Verification:
     Re-derive the same flips on a second, independent implementation
     (SeedSigner, Coldcard, an offline copy of Ian Coleman's BIP39 tool)
-    and confirm the words AND the master fingerprint match. One tool
-    agreeing with itself proves nothing.
+    and confirm the words AND the xprv match. One tool agreeing with
+    itself proves nothing.
 """
 
 import argparse
