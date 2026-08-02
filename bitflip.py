@@ -579,14 +579,31 @@ def clock_quantum(samples=20000):
     assuming 1 keeps the parity uniform on every clock: measured 0.98-0.99 bits
     per toss from a 1 ns tick all the way out to a 15.6 ms one.
 
-    This can UNDER-estimate. Apple's M-series timebase is 125/3, a 41.67 ns
-    tick, so successive deltas come back 41 and 42 and their gcd is 1 -- the
-    real granularity is 42x coarser than this reports. The same holds on a
-    Raspberry Pi and on most ARM64. That is safe here: under-estimating only
-    means dividing by too little, and the low bit of the result stays alive
-    because the steps still have gcd 1. It never over-estimates, which is the
-    direction that would matter: a gcd of real deltas cannot exceed the real
-    step.
+    This can UNDER-estimate, on any clock whose tick is not a whole number of
+    nanoseconds. Apple's M-series timebase is 125/3, a 41.67 ns tick, so
+    successive deltas come back 41 and 42 and their gcd is 1 -- the real
+    granularity is 42x coarser than this reports. The same holds on a Raspberry
+    Pi, on most ARM64, on HPET (69.84 ns) and on the ACPI PM timer (279.37 ns).
+    That is safe here: under-estimating only means dividing by too little, and
+    the low bit of the result stays alive because the steps still have gcd 1.
+
+    It can also OVER-estimate. The gcd of the steps a probe happened to observe
+    is a multiple of the real tick, not the tick itself: a loop advancing by
+    exactly k ticks every iteration would report k times the truth. That needs a
+    probe with no jitter of its own, which is not a thing -- 20000 reads here
+    produce 266 distinct deltas spanning 55-266 ns, and a single nanosecond of
+    loop jitter collapses the gcd within a handful of samples. It is harmless
+    when it does happen: dividing by a multiple of the tick still leaves the
+    delivery jitter spanning thousands of quanta, and an over-estimate large
+    enough to matter lands above _MAX_QUANTUM_NS, where r switches off rather
+    than degrades.
+
+    The direction that would actually be dangerous is reporting a quantum whose
+    low bit is already dead, and that one is impossible by construction rather
+    than by luck. If this returns g, then g divides every step the clock was
+    seen to take, so t // g advances in steps whose gcd is 1 and its low bit
+    cannot be constant. That invariant is what rules out the constant-tails
+    failure -- not any claim about which side of the true tick g falls on.
 
     20000 samples, not 2000, because the probe has to last long enough to see
     the tick it is trying to reject. 2000 reads span about 130 us, so a clock
@@ -937,13 +954,28 @@ def guided_entry(ent_bits, words):
     # Zero means the probe never saw the clock move, which is a coarser failure
     # than any threshold -- it must not pass. Beyond the threshold the tick
     # approaches the spread of the delivery jitter itself and the bits stop
-    # being unpredictable even while they stay perfectly balanced: measured,
-    # assuming a hand regular enough that only the jitter is unknown, 0.96 bits
-    # at 10 us and 0.86 at 100 us, with P(1) sitting at 0.4997 the whole way
-    # down. Every real clock clears this by 80x or more -- x86 TSC under 1 ns,
-    # ARM64 26-125 ns, Windows QPC 100 ns, paravirtualised 1 us -- and nothing
-    # real lives between there and a 15.6 ms legacy tick. So the bar costs
-    # honest machines nothing and refuses every machine it should.
+    # being unpredictable even while they stay perfectly balanced. Those are two
+    # different numbers and the gap between them is the whole point. Measured,
+    # crediting the hand with nothing so that only the delivery jitter is
+    # unknown: the min-entropy CONDITIONAL on a press schedule the attacker
+    # knows exactly is 0.96 bits at 10 us and 0.86 at 100 us, while the MARGINAL
+    # P(1) -- the only thing a statistical test can see -- sits at 0.4997 the
+    # whole way down. A test reads the second number and passes; an attacker
+    # collects the first.
+    #
+    # A real hand never leaves it that close. Measured over a 256-press run, the
+    # cadence spread is 184 ms, which is 1.8e8 quanta on a 1 ns clock, and the
+    # parity bias underflows a double. The bar is set by the case where the hand
+    # contributes nothing at all -- a metronome, a macro, someone tapping to a
+    # beat -- because FlipGuard can prove that presses happened and cannot prove
+    # that a human chose them. Delivery jitter is not what makes a deliberate
+    # press unpredictable; it is the floor that holds when the presser is a
+    # machine.
+    #
+    # Every real clock clears this by 80x or more -- x86 TSC under 1 ns, ARM64
+    # 26-125 ns, Windows QPC 100 ns, paravirtualised 1 us -- and nothing real
+    # lives between there and a 15.6 ms legacy tick. So the bar costs honest
+    # machines nothing and refuses every machine it should.
     tossable = live and 0 < quantum <= _MAX_QUANTUM_NS
     reader = guard = None
 
