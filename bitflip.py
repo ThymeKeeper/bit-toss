@@ -1290,8 +1290,6 @@ def main():
     print("    xprv:       %s" % master_xprv(seed))
     print("    key (hex):  %s" % priv.hex())
     print("    chain code: %s" % chain.hex())
-    if passphrase:
-        print("\n  (everything above except the words includes your passphrase)")
 
     print("")
 
