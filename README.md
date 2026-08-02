@@ -25,7 +25,7 @@ flips, H/1 = heads, T/0 = tails, whitespace and dashes ignored.
 
 `--passphrase` adds a BIP39 25th word.
 
-One flip is one bit. The checksum bits are computed, not flipped.
+One flip is one bit.
 
 | words | entropy | flips |
 |-------|---------|-------|
@@ -34,10 +34,6 @@ One flip is one bit. The checksum bits are computed, not flipped.
 
 Press **`r`** instead of typing a flip and it takes the nanosecond your finger
 arrived, keeping one bit of it. Held keys and pastes earn nothing.
-
-It prints the words and the BIP32 master private key as an importable `xprv`.
-Those are the same secret in two notations — the `xprv` is exactly as dangerous
-as the words. Everything except the words reflects your passphrase.
 
 ## Why human entropy
 
@@ -60,25 +56,11 @@ first is where the money has actually gone:
   BTC left 1,196 addresses in 41 minutes on 30 July; it is still draining as
   this is written.
 
-Every one of those produced output that passes every statistical test there is.
-That is the point: a broken RNG and a good one are indistinguishable from their
-output, so you cannot test your way to trust, and you cannot audit an RNG at
-runtime — you can only read the code and hope it is the code that ran.
+A broken RNG and a good one are indistinguishable from their output, so you cannot test your way to trust, and you cannot audit an RNG at runtime — you can only read the code and hope it is the code that ran.
 
-256 coin flips need none of that. They are 256 bits because the coin does not
-know either, and no amount of computation recovers what was never determined.
-No cipher to break, no pool to have been empty at boot. Which matters most in
-exactly the situation this tool is for: a freshly booted airgapped machine or a
-live USB, where the pool is youngest and the historical failure rate is highest.
+256 coin flips need none of that. They are 256 bits because the coin does not know either, and no amount of computation recovers what was never determined. No cipher to break, no pool to have been empty at boot. Which matters most in exactly the situation this tool is for: a freshly booted airgapped machine or a live USB, where the pool is youngest and the historical failure rate is highest.
 
-The `r` key is physical entropy too. The bit comes from when your finger landed,
-not from a state machine, and it is read through this machine's clock — so the
-script measures that clock before it will accept a single press, and refuses to
-toss at all if the tick is too coarse to carry a bit. Measured on bare metal:
-the bit needs about 3 ns of unpredictable spread to be uniform, the delivery
-path alone supplies 43,000–73,000 ns, and a real 256-press run had 184 ms of
-cadence spread. Four to eight orders of magnitude of margin, on the quantity
-that decides it.
+The `r` key is physical entropy too. The bit comes from when your finger landed, not from a state machine, and it is read through this machine's clock — so the script measures that clock before it will accept a single press, and refuses to toss at all if the tick is too coarse to carry a bit. Measured on bare metal: the bit needs about 3 ns of unpredictable spread to be uniform, the delivery path alone supplies 43,000–73,000 ns, and a real 256-press run had 184 ms of cadence spread. Four to eight orders of magnitude of margin, on the quantity that decides it.
 
 ## License
 
