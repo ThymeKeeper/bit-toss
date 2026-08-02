@@ -1067,6 +1067,29 @@ def ask_words():
         print("    enter 12 or 24")
 
 
+def ask_passphrase():
+    """The BIP39 25th word. Blank for none, which is what most wallets assume.
+
+    Asked rather than passed as a flag, because a flag puts it in the shell
+    history and in the argument list every process on the machine can read.
+
+    NOT stripped, and echoed rather than hidden. Both are deliberate. BIP39
+    feeds the passphrase into PBKDF2 exactly as given, so trimming a trailing
+    space here would hand back a different wallet than every other tool derives
+    from the same input. And unlike the mnemonic, a passphrase carries no
+    checksum: a typo does not fail, it silently derives a valid wallet that is
+    not yours, and nothing downstream can detect it. Seeing what you typed is
+    the only check there is, on a machine that is already printing the seed
+    phrase in plaintext.
+    """
+    if not sys.stdin.isatty():
+        return ""
+    try:
+        return input("\nPassphrase (25th word), or blank for none: ")
+    except (EOFError, KeyboardInterrupt):
+        sys.exit("\nAborted. Nothing was saved.")
+
+
 # ---------------------------------------------------------------------------
 # Self-check against the published BIP39 / BIP32 vectors.
 #
@@ -1192,8 +1215,6 @@ def main():
     ap = argparse.ArgumentParser(description="Derive a BIP39 mnemonic from coin flips.")
     ap.add_argument("flips", nargs="*",
                     help="the whole flip string, 128 or 256 flips; omit for guided entry")
-    ap.add_argument("--passphrase", default="",
-                    help="BIP39 passphrase (25th word). Empty by default.")
     args = ap.parse_args()
 
     words = load_wordlist()
@@ -1245,9 +1266,10 @@ def main():
             "byte, so the wallet it derives is public and is emptied within\n"
             "seconds of being funded. Something upstream is broken -- do not\n"
             "use these words, and check the flips you entered.")
+    passphrase = ask_passphrase()
     mnemonic_words = entropy_to_mnemonic(entropy, words)
     mnemonic = " ".join(mnemonic_words)
-    seed = mnemonic_to_seed(mnemonic, args.passphrase)
+    seed = mnemonic_to_seed(mnemonic, passphrase)
 
     # Guided entry already named every word as its group was completed, so
     # printing them again is just the same secret on screen twice. From an
@@ -1268,7 +1290,7 @@ def main():
     print("    xprv:       %s" % master_xprv(seed))
     print("    key (hex):  %s" % priv.hex())
     print("    chain code: %s" % chain.hex())
-    if args.passphrase:
+    if passphrase:
         print("\n  (everything above except the words includes your passphrase)")
 
     print("")
