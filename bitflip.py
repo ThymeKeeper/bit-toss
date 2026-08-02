@@ -662,10 +662,21 @@ def _toss_bit(t_ns, quantum):
     return "1" if (t_ns // quantum) & 1 else "0"
 
 
-_MAX_QUANTUM_NS = 10_000       # 10 us. Coarser and the bits stop being
-                               #   unpredictable while still looking balanced,
-                               #   and the probe itself stops being able to
-                               #   measure the tick it is meant to reject.
+_MAX_QUANTUM_NS = 1_000        # 1 us. Coarser and the bits start losing
+                               #   unpredictability while still looking
+                               #   balanced, and the probe itself stops being
+                               #   able to measure the tick it is meant to
+                               #   reject. Against the 43 us of delivery jitter
+                               #   this path actually has, a 1 us tick leaves
+                               #   the parity at 1.0000 bits and a 10 us tick
+                               #   at 0.9728 -- seven bits off a 24-word seed,
+                               #   in the case where the hand contributes
+                               #   nothing. Nothing real is excluded by the
+                               #   tighter bar: every clocksource in the wild
+                               #   probes at or below it (TSC and every
+                               #   non-integer tick report 1, Windows QPC 100,
+                               #   a 1 MHz paravirt timer exactly 1000), and
+                               #   the next one up is the 15.6 ms legacy tick.
 _DEBOUNCE_NS = 100_000_000     # 100 ms of silence required before an r counts.
                                #   Above every autorepeat rate in the wild:
                                #   Windows 30 Hz (33 ms), X11 25 Hz (40 ms),
@@ -958,10 +969,10 @@ def guided_entry(ent_bits, words):
     # different numbers and the gap between them is the whole point. Measured,
     # crediting the hand with nothing so that only the delivery jitter is
     # unknown: the min-entropy CONDITIONAL on a press schedule the attacker
-    # knows exactly is 0.96 bits at 10 us and 0.86 at 100 us, while the MARGINAL
-    # P(1) -- the only thing a statistical test can see -- sits at 0.4997 the
-    # whole way down. A test reads the second number and passes; an attacker
-    # collects the first.
+    # knows exactly is 1.0000 bits at the 1 us bar, 0.9728 at 10 us and 0.8360
+    # at 100 us, while the MARGINAL P(1) -- the only thing a statistical test
+    # can see -- sits within 0.0005 of a half the whole way down. A test reads
+    # the second number and passes; an attacker collects the first.
     #
     # A real hand never leaves it that close. Measured over a 256-press run, the
     # cadence spread is 184 ms, which is 1.8e8 quanta on a 1 ns clock, and the
@@ -972,9 +983,12 @@ def guided_entry(ent_bits, words):
     # press unpredictable; it is the floor that holds when the presser is a
     # machine.
     #
-    # Every real clock clears this by 80x or more -- x86 TSC under 1 ns, ARM64
-    # 26-125 ns, Windows QPC 100 ns, paravirtualised 1 us -- and nothing real
-    # lives between there and a 15.6 ms legacy tick. So the bar costs honest
+    # Every real clock still clears the tighter bar -- x86 TSC under 1 ns, ARM64
+    # 18-52 ns, HPET 70 ns, Windows QPC 100 ns, ACPI PM 279 ns, PIT 838 ns, a
+    # 1 MHz paravirt timer exactly 1000 -- because a tick that is not a whole
+    # number of nanoseconds probes as 1 regardless of how coarse it really is,
+    # and the integer ones are all at or under a microsecond. Nothing real lives
+    # between there and the 15.6 ms legacy tick. So the bar costs honest
     # machines nothing and refuses every machine it should.
     tossable = live and 0 < quantum <= _MAX_QUANTUM_NS
     reader = guard = None

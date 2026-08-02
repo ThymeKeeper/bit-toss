@@ -55,9 +55,10 @@ first is where the money has actually gone:
 - **Milk Sad, 2023** — `libbitcoin-explorer` seeded a Mersenne Twister with a
   32-bit timestamp. Millions of dollars, from a tool whose whole job was seeds.
 - **Coldcard, 2026** — a build flag left the STM32 hardware TRNG disabled, so
-  five years of seeds came from a software PRNG keyed on the chip ID and boot
-  counter. Mk2/Mk3 seeds held about 40 bits. 1,083 BTC left 1,196 addresses in
-  41 minutes on 30 July; it is still draining as this is written.
+  five years of seeds, across every model they ship, came from a software PRNG
+  keyed on the chip ID and boot counter. The weakest held about 40 bits. 1,083
+  BTC left 1,196 addresses in 41 minutes on 30 July; it is still draining as
+  this is written.
 
 Every one of those produced output that passes every statistical test there is.
 That is the point: a broken RNG and a good one are indistinguishable from their
