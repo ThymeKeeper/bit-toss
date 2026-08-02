@@ -21,7 +21,7 @@ python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 
 Run bare and it asks for 12 or 24 words, then takes your flips in groups of 11,
 naming each word as its group completes. Or pass the whole string — 128 or 256
-flips, H/1 = heads, T/0 = tails, whitespace and dashes ignored.
+flips, H/1 = heads, T/0 = tails.
 
 `--passphrase` adds a BIP39 25th word.
 
@@ -33,7 +33,7 @@ One flip is one bit.
 | 24    | 256     | 256   |
 
 Press **`r`** instead of typing a flip and it takes the nanosecond your finger
-arrived, keeping one bit of it. Held keys and pastes earn nothing.
+arrived, keeping one bit of it.
 
 ## Why human entropy
 
