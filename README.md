@@ -10,7 +10,7 @@ it produces came from a coin or from your fingers.
 **Run this on an airgapped machine.**
 
 screenshot:
-<img width="1390" height="1584" alt="1" src="https://github.com/user-attachments/assets/90ae650a-26c7-4e69-b81a-a4795d9a010a" />
+<img width="2880" height="1800" alt="Screenshot from 2026-08-05 17-47-39" src="https://github.com/user-attachments/assets/a8462271-f959-41cc-bd30-105ca3d71c69" />
 
 
 ## Usage
