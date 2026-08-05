@@ -22,7 +22,56 @@ python3 bitflip.py HTTHHTTH...       # the whole flip string as an argument
 
 Run bare and it asks for 12 or 24 words, then takes your flips in groups of 11,
 naming each word as its group completes. Or pass the whole string — 128 or 256
-flips, H/1 = heads, T/0 = tails. It then asks for a passphrase (the BIP39 25th word).
+flips, H/1 = heads, T/0 = tails. It then asks for a passphrase (the BIP39 25th
+word), typed twice to confirm, and finishes by printing the BIP32 master
+fingerprint and xpub — re-derive those on a second, independent tool and compare
+them. A passphrase has no checksum, so a matching fingerprint is the only
+confirmation you get that you typed the one you meant to.
+
+Compare the **fingerprint**. The xpub printed is the master key at `m`, and a
+wallet does not show you that one — Sparrow shows the account key at
+`m/84'/0'/0'`, three levels down, which shares no bytes with it and is not meant
+to. A mismatch there is not a derivation bug; the fingerprint is the line the
+two tools should agree on.
+
+It also prints a **watch-only descriptor** for the native segwit account:
+
+```
+wpkh([73c5da0a/84h/0h/0h]xpub6CatWdiZiodmUeTDp8LT…/<0;1>/*)#qf45pmyh
+```
+
+Import that to watch the wallet from a phone or a laptop without the words ever
+being typed there. It carries the four things a bare xpub does not: the script
+type, which seed (the fingerprint), which branch, and the key — a bare xpub
+leaves the script type to be guessed, and a wrong guess watches the wrong
+addresses and reports a zero balance. Note that this descriptor reveals every
+address the account will ever use, so whoever holds it can watch the balance and
+the whole payment history forever. It cannot spend.
+
+It then prints the same account as a **spending descriptor**, with an `xprv`
+instead of the `xpub`. Bitcoin Core has no BIP39 in it — no RPC mentions a
+mnemonic or a seed phrase — so a node cannot be the wallet for these words until
+they have been turned into a key. This is that key, in the form Core imports:
+
+```
+bitcoin-cli -named createwallet wallet_name=coinflip blank=true
+bitcoin-cli -rpcwallet=coinflip importdescriptors \
+  '[{"desc":"wpkh([73c5da0a/84h/0h/0h]xprv9ybY78BftS5UG…/<0;1>/*)#aeunql2k","active":true,"timestamp":<seed creation time>}]'
+```
+
+Core will then sign and spend on its own. Two things to be clear about before
+using it. This line is worth exactly what the words are worth — whoever reads it
+owns the account. And it is sufficient on its own, so a BIP39 passphrase stops
+protecting anything the moment it exists: the point of a passphrase is that the
+words alone are not enough, and this string is. If you want the passphrase to
+keep meaning something, import the watch-only descriptor instead and sign
+somewhere the key is not online.
+
+Keep a passphrase to ASCII if you can. BIP39 requires NFKD normalisation before
+hashing and not every wallet does it, so a passphrase with accents in it can
+restore a different wallet elsewhere from the same keystrokes. This tool
+normalises, matches Trezor's reference implementation, and warns when what you
+typed is not ASCII.
 
 One flip is one bit.
 

@@ -14,8 +14,8 @@ Usage:
 Verification:
     Re-derive the same flips on a second, independent implementation
     (SeedSigner, Coldcard, an offline copy of Ian Coleman's BIP39 tool)
-    and confirm the words AND the xprv match. One tool agreeing with
-    itself proves nothing.
+    and confirm the words AND the master fingerprint match. One tool
+    agreeing with itself proves nothing.
 """
 
 import argparse
@@ -490,18 +490,248 @@ def master_fingerprint(seed):
     return hash160(compressed_pubkey(priv))[:4].hex()
 
 
-def master_xprv(seed):
-    """Serialized BIP32 master private key -- the importable `xprv...` form."""
+def master_xpub(seed):
+    """Serialized BIP32 master public key -- the `xpub...` form.
+
+    The public half deliberately, and it cross-checks everything the private
+    one did. An xpub that matches a second implementation's proves the chain
+    code matches and the public key matches, and a public key that matches came
+    from a private key that matches -- so nothing is given up by printing this
+    instead of the xprv, except a second complete copy of the secret sitting on
+    screen next to the words.
+
+    Not a secret, but treat it as private -- while knowing it reveals less than
+    the xpub a wallet shows you, for a reason worth understanding. Every
+    standard path hardens its first three levels (m/84'/0'/0'), and a hardened
+    child cannot be derived from a public key at all, only from the private one.
+    So this key cannot reach the accounts your wallet actually uses. What it
+    reaches is the unhardened children of m -- m/0/i, the layout of a few
+    pre-BIP44 wallets -- and it identifies the seed. The ACCOUNT xpub is the one
+    that exposes every address of that account forever; this is not that.
+    """
     priv, chain = master_key(seed)
-    payload = (
-        bytes.fromhex("0488ADE4")   # mainnet private version
-        + b"\x00"                   # depth 0: this is the master
-        + b"\x00" * 4               # no parent, so no parent fingerprint
-        + b"\x00" * 4               # child number 0
+    return _serialize_xpub(0, b"\x00" * 4, 0, chain, compressed_pubkey(priv))
+
+
+_XPUB_VERSION = "0488B21E"               # mainnet public
+_XPRV_VERSION = "0488ADE4"               # mainnet private
+
+
+def _serialize_ext(version, depth, parent_fp, child, chain, key33):
+    """The 78 bytes of a BIP32 extended key, base58check encoded.
+
+    One function for both halves and every depth. The master key is not a
+    special case of anything -- it is these same bytes with depth 0, a zero
+    parent fingerprint and child number 0 -- and the public and private forms
+    differ only in the version and in how the 33 bytes of key are made up.
+    Writing that four times over is how one copy comes to disagree with another.
+    """
+    return b58check(
+        bytes.fromhex(version)
+        + bytes([depth])
+        + parent_fp
+        + child.to_bytes(4, "big")
         + chain
-        + b"\x00" + priv            # private keys are left-padded to 33 bytes
+        + key33
     )
-    return b58check(payload)
+
+
+def _serialize_xpub(depth, parent_fp, child, chain, pub):
+    return _serialize_ext(_XPUB_VERSION, depth, parent_fp, child, chain, pub)
+
+
+def _serialize_xprv(depth, parent_fp, child, chain, priv):
+    # Private keys are left-padded to 33 bytes, so both forms serialize to the
+    # same length and the same field offsets.
+    return _serialize_ext(_XPRV_VERSION, depth, parent_fp, child, chain,
+                          b"\x00" + priv)
+
+
+_HARDENED = 0x80000000
+
+
+def ckd_priv(priv, chain, index):
+    """One BIP32 step: private parent -> private child.
+
+    The two branches are the whole reason an account key cannot be walked back
+    up to the seed. A hardened index feeds the PRIVATE key into the HMAC, so
+    deriving it requires the private key and no amount of public information
+    substitutes. An unhardened index feeds the public key, which is what makes
+    m/0/i reachable from an xpub alone -- convenient for watching a wallet, and
+    the reason every standard path hardens the three levels above the account.
+    """
+    if index >= _HARDENED:
+        data = b"\x00" + priv + index.to_bytes(4, "big")
+    else:
+        data = compressed_pubkey(priv) + index.to_bytes(4, "big")
+    I = hmac.new(chain, data, hashlib.sha512).digest()
+    tweak = int.from_bytes(I[:32], "big")
+    child = (tweak + int.from_bytes(priv, "big")) % _N
+    if tweak >= _N or child == 0:
+        # BIP32 says move to the next index. Probability about 2^-127, so in
+        # practice this is a bug in the arithmetic above, not bad luck.
+        raise ValueError("invalid child key at index %d" % index)
+    return child.to_bytes(32, "big"), I[32:]
+
+
+def account_xpub(seed, path):
+    """The xpub at `path`, a non-empty sequence of child indices.
+
+    The parent fingerprint is the IMMEDIATE parent's, not the master's, which is
+    why the last step is peeled out of the loop rather than tracked through it.
+    Getting it wrong produces a string every wallet imports happily and no
+    wallet matches, since the fingerprint is how a descriptor says which key it
+    is talking about.
+
+    Peeled out for a second reason: a public key here costs an elliptic curve
+    multiplication in pure Python, and this needs exactly two of them -- the
+    parent's, for the fingerprint, and the child's, to serialize. Computing one
+    per level instead put a second of nothing on screen before the banner on
+    this machine, and a great deal more than that on the slow airgapped one
+    somebody actually runs this on.
+    """
+    depth, parent_fp, child, chain, priv = _walk(seed, path)
+    return _serialize_xpub(depth, parent_fp, child, chain,
+                           compressed_pubkey(priv))
+
+
+def account_xprv(seed, path):
+    """The xprv at `path`. The same key as account_xpub, and it can spend.
+
+    Cheaper than the public form by one elliptic curve multiplication, since
+    nothing here needs the child's public key -- only the parent's, for the
+    fingerprint.
+    """
+    depth, parent_fp, child, chain, priv = _walk(seed, path)
+    return _serialize_xprv(depth, parent_fp, child, chain, priv)
+
+
+def _walk(seed, path):
+    """Derive down `path` and return everything a serializer needs."""
+    priv, chain = master_key(seed)
+    for index in path[:-1]:
+        priv, chain = ckd_priv(priv, chain, index)
+    parent_fp = hash160(compressed_pubkey(priv))[:4]
+    priv, chain = ckd_priv(priv, chain, path[-1])
+    return len(path), parent_fp, path[-1], chain, priv
+
+
+# ---------------------------------------------------------------------------
+# Output descriptors (BIP380 / BIP389), so there is one line to hand a
+# watch-only wallet. A bare xpub is not enough and the gap is silent: the
+# script type is not encoded in the `xpub` prefix, so a wallet given one has to
+# guess, and a wrong guess shows a zero balance on a wallet that holds coins.
+# The descriptor carries all four things the other side needs -- what to build
+# (wpkh), which seed (the fingerprint), which branch (84h/0h/0h), and the key.
+# ---------------------------------------------------------------------------
+
+_DESC_CHECKSUM_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+# BIP380's permutation of the 95 printable ASCII characters. The ORDER is the
+# algorithm -- a character's position is its input symbol, and the grouping into
+# 32s is what makes a case error shift by a multiple of 32 and stay detectable.
+# Transcribed from the spec; self_check pins it two ways.
+_DESC_INPUT_CHARSET = (
+    "0123456789()[],'/*abcdefgh@:$%{}"
+    "IJKLMNOPQRSTUVWXYZ&+-.;<=>?!^_|~"
+    "ijklmnopqrstuvwxyzABCDEFGH`#\"\\ "
+)
+
+
+def _desc_polymod(c, val):
+    """The BCH code behind a descriptor checksum, over GF(32)."""
+    c0 = c >> 35
+    c = ((c & 0x7FFFFFFFF) << 5) ^ val
+    for bit, xor in ((1, 0xF5DEE51989), (2, 0xA9FDCA3312), (4, 0x1BAB10E32D),
+                     (8, 0x3706B1677A), (16, 0x644D626FFD)):
+        if c0 & bit:
+            c ^= xor
+    return c
+
+
+def descriptor_checksum(desc):
+    """The 8 characters after the `#`.
+
+    Not decoration. Bitcoin Core refuses a descriptor without one, and its
+    purpose is the failure mode this whole block exists to avoid: an xpub with
+    one character wrong is still a valid xpub, describing a wallet that is not
+    yours and that you would discover by receiving into it.
+    """
+    c, cls, count = 1, 0, 0
+    for ch in desc:
+        pos = _DESC_INPUT_CHARSET.find(ch)
+        if pos < 0:
+            raise ValueError("character %r cannot appear in a descriptor" % ch)
+        c = _desc_polymod(c, pos & 31)
+        # Three characters at a time: the low 5 bits of each go in above, and
+        # their group numbers are packed base-3 into one more symbol here.
+        cls = cls * 3 + (pos >> 5)
+        count += 1
+        if count == 3:
+            c, cls, count = _desc_polymod(c, cls), 0, 0
+    if count:
+        c = _desc_polymod(c, cls)
+    for _ in range(8):
+        c = _desc_polymod(c, 0)
+    c ^= 1
+    return "".join(_DESC_CHECKSUM_CHARSET[(c >> (5 * (7 - i))) & 31]
+                   for i in range(8))
+
+
+_BIP84_PATH = (84 + _HARDENED, 0 + _HARDENED, 0 + _HARDENED)
+
+
+def path_text(path):
+    """`(84+2**31, 2**31, 2**31)` -> `84h/0h/0h`.
+
+    Derived from the same tuple the derivation walks, never typed alongside it.
+    The two disagreeing is the worst bug available here: the descriptor would
+    name one branch and carry the key of another, import without complaint, and
+    watch an address the wallet will never use. Nothing downstream can see it,
+    because both halves are internally well formed.
+    """
+    return "/".join("%dh" % (i - _HARDENED) if i >= _HARDENED else "%d" % i
+                    for i in path)
+
+
+def watch_descriptor(seed):
+    """The native segwit (BIP84) account, as one importable line.
+
+    `h` rather than `'` for the hardened marks: both are accepted everywhere,
+    and an apostrophe inside a string you are going to paste into a shell is a
+    quoting accident waiting to happen.
+
+    `<0;1>` is BIP389 multipath: one descriptor covering both the receive chain
+    and the change chain. Receive-only would look right and then quietly
+    misreport the balance the first time the wallet spent anything, since the
+    change would land on addresses it was never told to watch.
+    """
+    return _descriptor(master_fingerprint(seed), _BIP84_PATH,
+                       account_xpub(seed, _BIP84_PATH))
+
+
+def spend_descriptor(seed):
+    """The same account, with the key that signs.
+
+    Bitcoin Core imports this into a wallet with private keys enabled and can
+    then spend, which is the only way a node is the wallet without a separate
+    signer -- Core has no BIP39 in it, so the words and the passphrase have to
+    become a key before it can consume them, and this is that key.
+
+    It is the whole account, not one address, and it is a secret of exactly the
+    same weight as the words: whoever reads it spends everything in the account,
+    now and every address it ever hands out. It also ends the one thing the
+    passphrase was doing -- the words alone no longer being enough -- because
+    this string is enough on its own. That is a real trade and it is the point
+    of printing it, not an oversight in printing it.
+    """
+    return _descriptor(master_fingerprint(seed), _BIP84_PATH,
+                       account_xprv(seed, _BIP84_PATH))
+
+
+def _descriptor(fingerprint, path, key):
+    body = "wpkh([%s/%s]%s/<0;1>/*)" % (fingerprint, path_text(path), key)
+    return body + "#" + descriptor_checksum(body)
 
 
 # ---------------------------------------------------------------------------
@@ -1081,13 +1311,52 @@ def ask_passphrase():
     not yours, and nothing downstream can detect it. Seeing what you typed is
     the only check there is, on a machine that is already printing the seed
     phrase in plaintext.
+
+    Typed twice, and the second entry catches a failure the echo cannot. The
+    echo shows characters; it cannot show a trailing space, a double space or a
+    Tab, and it is read by the same eyes that just made the typo. Retyping
+    catches the slip those eyes skip over. It does not catch a mistake made
+    identically twice, so the accepted value is printed back inside brackets
+    with its length -- which is the only place whitespace at either end becomes
+    visible, and the only way to tell 12 characters from 13.
+
+    A blank passphrase is not confirmed. There is nothing to have mistyped, and
+    the one thing worth checking about it -- that you did not mean to enter one
+    -- is answered by the line printed below the words, not by asking twice.
     """
     if not sys.stdin.isatty():
         return ""
-    try:
-        return input("\nPassphrase (25th word), or blank for none: ")
-    except (EOFError, KeyboardInterrupt):
-        sys.exit("\nAborted. Nothing was saved.")
+    ask = "\nPassphrase (25th word), or blank for none: "
+    # Padded to the first prompt's width so what you type lands in the same
+    # column both times, which is what makes the two lines comparable at a
+    # glance. Measured from the prompt rather than counted out in spaces, so it
+    # cannot drift the next time the wording changes.
+    confirm = "%-*s" % (len(ask) - 1, "Type it again to confirm:")
+    while True:
+        try:
+            first = input(ask)
+            if first == "":
+                return ""
+            again = input(confirm)
+        except (EOFError, KeyboardInterrupt):
+            sys.exit("\nAborted. Nothing was saved.")
+        if first == again:
+            print("  using passphrase [%s] -- %d characters" % (first, len(first)))
+            # BIP39 says to NFKD-normalise the passphrase before hashing it, and
+            # mnemonic_to_seed above does. Not every implementation bothers, and
+            # the published vectors cannot catch it because all of them use the
+            # ASCII passphrase "TREZOR". Measured on this machine: for the
+            # passphrase "unicode" with diacritics, this file and Trezor's
+            # reference implementation agree on fingerprint 220f14c0, while a
+            # library that skips the normalisation derives 579a30b7 -- a
+            # different wallet, from the same keystrokes, with nothing to
+            # indicate which one you are looking at. ASCII sidesteps the whole
+            # question, so it is worth saying so before the coins arrive.
+            if not first.isascii():
+                print("    not ASCII -- some wallets skip the NFKD step BIP39"
+                      " requires and derive a different wallet from this")
+            return first
+        print("    those do not match -- both entries discarded, start over")
 
 
 # ---------------------------------------------------------------------------
@@ -1096,8 +1365,10 @@ def ask_passphrase():
 # A wallet validates the words you type into it -- wordlist membership and the
 # checksum -- so a bug in that path announces itself immediately. Nothing
 # validates what comes after. A broken PBKDF2 or BIP32 still yields a phrase
-# every wallet accepts, while the fingerprint and xprv printed below quietly
-# describe a different wallet. These vectors are the only thing standing
+# every wallet accepts, while the fingerprint and xpub printed below quietly
+# describe a different wallet -- and since those are what you compare against a
+# second tool, a bug there does not just go unnoticed, it fakes the agreement
+# that was supposed to catch it. These vectors are the only thing standing
 # between that and your coins, so they run every time, unconditionally.
 # ---------------------------------------------------------------------------
 
@@ -1123,11 +1394,107 @@ _FP_VECTOR = ("abandon abandon abandon abandon abandon abandon abandon abandon a
 # the two can never drift apart.
 _KNOWN_DEAD = frozenset(hex_ent for hex_ent, _, _ in _VECTORS)
 
-# BIP32 test vector 1: seed 000102030405060708090a0b0c0d0e0f -> master xprv.
-# Exercises the serialization and the base58check encoder end to end.
-_XPRV_VECTOR = (
-    "000102030405060708090a0b0c0d0e0f",
-    "xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi",
+# BIP32 test vectors 1 and 4: seed -> master xpub. Exercise the version bytes,
+# the serialization and the base58check encoder end to end. Worth having as
+# published vectors rather than a self-consistency check, because a wrong
+# version byte still base58-encodes to something that looks like an extended
+# key -- with a valid checksum, on the wrong prefix.
+#
+# TWO of them, and specifically these two, for one reason: a compressed public
+# key begins 0x02 for an even y and 0x03 for an odd one, and vector 1's master
+# key is odd. On that vector alone a build that hardcoded 0x03 -- or computed
+# the parity of the wrong coordinate -- would pass here and then print a wrong
+# fingerprint and a wrong xpub for about half of all real seeds. Vector 4's
+# master key is even, so between them the parity byte is pinned rather than
+# assumed. It is the one byte of the 78 that depends on the elliptic curve
+# arithmetic above rather than on a constant.
+_XPUB_VECTORS = [
+    ("000102030405060708090a0b0c0d0e0f",
+     "xpub661MyMwAqRbcFtXgS5sYJABqqG9YLmC4Q1Rdap9gSE8NqtwybGhePY2gZ29ESFjqJoCu1Rupje8YtGqsefD265TMg7usUDFdp6W1EGMcet8"),
+    ("3ddd5602285899a946114506157c7997e5444528f3003f6134712147db19b678",
+     "xpub661MyMwAqRbcGczjuMoRm6dXaLDEhW1u34gKenbeYqAix21mdUKJyuyu5F1rzYGVxyL6tmgBUAEPrEz92mBXjByMRiJdba9wpnN37RLLAXa"),
+]
+
+# BIP32 test vector 1 again, this time down the tree, because the descriptor
+# printed at the end stands on three hardened derivations and none of the vectors
+# above exercise even one. These pin ckd_priv, the parent fingerprint (which must
+# be the immediate parent's, not the master's) and the child number field --
+# three things invisible in the string a wallet imports and fatal to the one
+# comparison a descriptor exists to support.
+#
+# Two of that vector's five published chains, not all five, and the arithmetic of
+# the choice matters more than the coverage it gives up. Each chain is the
+# previous one derived one step further, so the deepest already depends on every
+# intermediate step being right -- a wrong step anywhere breaks m/0'/1/2'/2/
+# 1000000000 too. What the middle chains would add is the SERIALIZATION at depths
+# 2, 3 and 4, and that is three lines shared by every depth. Meanwhile depth 3,
+# the one this file actually derives, is pinned end to end by _DESCRIPTOR_VECTOR
+# below. So the middles were costing an elliptic curve multiplication each to
+# re-check what the ends already prove: 0.6 of the 0.9 seconds this whole
+# self-check took, which is ten seconds of blank screen on the slow airgapped
+# machine somebody actually runs this on, before the banner appears.
+#
+# Kept: depth 1, where the loop over path[:-1] runs zero times and the parent is
+# the master itself -- its own code path, and the cheapest vector there is. And
+# depth 5, which reaches through a hardened step, two unhardened ones and an
+# index just under 2^31 to get where it lands.
+# Both halves at each depth: the xprv printed at the end is not a re-encoding of
+# the xpub, it is a second serialization of the same key, and a version byte or a
+# padding byte wrong in only that one would go out as a string Core imports
+# without complaint. Pinned against the published private form, not against this
+# file's own public one.
+_DERIV_VECTORS = [
+    ((0 + _HARDENED,),
+     "xpub68Gmy5EdvgibQVfPdqkBBCHxA5htiqg55crXYuXoQRKfDBFA1WEjWgP6LHhwBZeNK1VTsfTFUHCdrfp1bgwQ9xv5ski8PX9rL2dZXvgGDnw",
+     "xprv9uHRZZhk6KAJC1avXpDAp4MDc3sQKNxDiPvvkX8Br5ngLNv1TxvUxt4cV1rGL5hj6KCesnDYUhd7oWgT11eZG7XnxHrnYeSvkzY7d2bhkJ7"),
+    ((0 + _HARDENED, 1, 2 + _HARDENED, 2, 1000000000),
+     "xpub6H1LXWLaKsWFhvm6RVpEL9P4KfRZSW7abD2ttkWP3SSQvnyA8FSVqNTEcYFgJS2UaFcxupHiYkro49S8yGasTvXEYBVPamhGW6cFJodrTHy",
+     "xprvA41z7zogVVwxVSgdKUHDy1SKmdb533PjDz7J6N6mV6uS3ze1ai8FHa8kmHScGpWmj4WggLyQjgPie1rFSruoUihUZREPSL39UNdE3BBDu76"),
+]
+
+# Descriptor checksums, from BIP380 and from Bitcoin Core's own test suite --
+# the implementation that will reject the string if this is wrong. Nothing here
+# is self-generated: a checksum this file computed and then asserted against
+# itself would agree with itself while agreeing with no wallet on earth.
+_DESC_VECTORS = [
+    ("raw(deadbeef)", "89f8spxm"),
+    ("wpkh(tprv8ZgxMBicQKsPd7Uf69XL1XwhmjHopUGep8GuEiJDZmbQz6o58LninorQAfcKZWARbtRtfnLcJ5MQ2AtHcQJCCRUcMRvmDUjyEmNUWwx8UbK/1/1/0)",
+     "t6wfjs64"),
+    ("wpkh(tpubD6NzVbkrYhZ4WaWSyoBvQwbpLkojyoTZPRsgXELWz3Popb3qkjcJyJUGLnL4qHHoQvao8ESaAstxYSnhyswJ76uZPStJRJCTKvosUCJZL5B/1/1/0)",
+     "s9ga3alw"),
+    ("wpkh(tprv8ZgxMBicQKsPd7Uf69XL1XwhmjHopUGep8GuEiJDZmbQz6o58LninorQAfcKZWARbtRtfnLcJ5MQ2AtHcQJCCRUcMRvmDUjyEmNUWwx8UbK/1/1/*)",
+     "kft60nuy"),
+    # The only published vector carrying [origin] information, which is the part
+    # of the string this file assembles by hand rather than copies.
+    ("wsh(sortedmulti(1,[59865f44/48'/0'/0'/2']026d15412460ba0d881c21837bb999233896085a9ed4e5445bd637c10e579768ba,"
+     "[b7044ca6/48'/0'/0'/2']030baf0497ab406ff50cb48b4013abac8a0338758d2fd54cd934927afa57cc2062))",
+     "rzx9dffd"),
+]
+
+# The whole line, end to end, for the BIP39 test mnemonic with no passphrase.
+# One comparison covering every part that is assembled here rather than copied:
+# the path constant is the standard one (84h, not 48h), the path TEXT agrees with
+# the tuple that was actually walked, the account key is at depth 3 with the
+# right parent fingerprint, the multipath form is spelled the way BIP389 spells
+# it, and the checksum is over all of it.
+#
+# Provenance, since a wrong constant here would be a self-fulfilling test: the
+# account key is BIP84's own published account-0 vector for this mnemonic (given
+# there as a zpub, which is the same 78 bytes under SLIP-132 version bytes); the
+# fingerprint is BIP32's, already pinned by _FP_VECTOR above; and the finished
+# string was put through Bitcoin Core v31.1 getdescriptorinfo, which returned
+# this checksum and derived BIP84's published first address from it.
+#
+# Both descriptors, because the spending one is the string with consequences and
+# it is assembled from a different serializer than the watch-only one. BIP84
+# publishes this account's private key too (as a zprv, the same 78 bytes under
+# SLIP-132 version bytes), so neither line here is this file quoting itself.
+_DESCRIPTOR_VECTOR = (
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    "wpkh([73c5da0a/84h/0h/0h]xpub6CatWdiZiodmUeTDp8LT5or8nmbKNcuyvz7WyksVFkKB4RHwCD3XyuvPEbvq"
+    "AQY3rAPshWcMLoP2fMFMKHPJ4ZeZXYVUhLv1VMrjPC7PW6V/<0;1>/*)#qf45pmyh",
+    "wpkh([73c5da0a/84h/0h/0h]xprv9ybY78BftS5UGANki6oSifuQEjkpyAC8ZmBvBNTshQnCBcxnefjHS7buPMkk"
+    "qhcRzmoGZ5bokx7GuyDAiktd5HemohAU4wV1ZPMDRmLpBMm/<0;1>/*)#aeunql2k",
 )
 
 
@@ -1155,9 +1522,34 @@ def self_check(words):
     m, want_fp = _FP_VECTOR
     if master_fingerprint(mnemonic_to_seed(m, "")) != want_fp:
         _fail("master fingerprint")
-    hex_seed, want_xprv = _XPRV_VECTOR
-    if master_xprv(bytes.fromhex(hex_seed)) != want_xprv:
-        _fail("BIP32 xprv")
+    for hex_seed, want_xpub in _XPUB_VECTORS:
+        if master_xpub(bytes.fromhex(hex_seed)) != want_xpub:
+            _fail("BIP32 xpub for seed %s" % hex_seed)
+    vec_seed = bytes.fromhex(_XPUB_VECTORS[0][0])
+    for path, want_xpub, want_xprv in _DERIV_VECTORS:
+        if account_xpub(vec_seed, path) != want_xpub:
+            _fail("BIP32 child derivation at depth %d" % len(path))
+        if account_xprv(vec_seed, path) != want_xprv:
+            _fail("BIP32 child xprv at depth %d" % len(path))
+    # The charset is a permutation of the 95 printable ASCII characters, so
+    # checking the SET catches every way a transcription can go wrong except
+    # reordering -- a dropped character, a duplicated one, a letter typed for a
+    # symbol -- and the vectors below catch the reordering. Without this, a
+    # charset one character short still checksums everything that happens to
+    # miss the shifted region, which is most short descriptors.
+    if sorted(_DESC_INPUT_CHARSET) != [chr(i) for i in range(32, 127)]:
+        _fail("descriptor charset is not the printable ASCII set")
+    if len(set(_DESC_CHECKSUM_CHARSET)) != 32:
+        _fail("descriptor checksum charset")
+    for body, want_sum in _DESC_VECTORS:
+        if descriptor_checksum(body) != want_sum:
+            _fail("descriptor checksum for %s..." % body[:24])
+    desc_m, want_watch, want_spend = _DESCRIPTOR_VECTOR
+    desc_seed = mnemonic_to_seed(desc_m, "")
+    if watch_descriptor(desc_seed) != want_watch:
+        _fail("watch-only descriptor")
+    if spend_descriptor(desc_seed) != want_spend:
+        _fail("spending descriptor")
     # Two vectors, between them fatal to every way this has been got wrong:
     # taking the raw nanosecond parity without dividing by the tick (the
     # constant-tails bug), folding a popcount over it instead, halving the
@@ -1285,11 +1677,43 @@ def main():
                      for c in range(3)]
             print("   " + "   ".join(cells).rstrip())
 
-    priv, chain = master_key(seed)
-    print("\n  BIP32 master private key")
-    print("    xprv:       %s" % master_xprv(seed))
-    print("    key (hex):  %s" % priv.hex())
-    print("    chain code: %s" % chain.hex())
+    # Neither of these is the wallet -- the words above are, and they are the
+    # only thing that has to survive. These two exist to be compared, and both
+    # are functions of the passphrase as well as the words, which is what makes
+    # the comparison worth doing: the mnemonic carries a checksum and the
+    # passphrase carries nothing, so re-deriving on a second implementation and
+    # matching the fingerprint is the only confirmation you will ever get that
+    # every character of what you typed above was what you meant. Four bytes
+    # agreeing is enough for that; the xpub is here because it is what a
+    # watch-only wallet wants and because it pins the chain code too.
+    print("\n  BIP32 master key")
+    print("    fingerprint: %s" % master_fingerprint(seed))
+    print("    xpub (m):    %s" % master_xpub(seed))
+    if not passphrase:
+        # Said out loud because its absence is invisible, and because restoring
+        # these words WITH a passphrase later lands on an empty wallet that
+        # looks identical to a wrong one.
+        print("    (no passphrase)")
+
+    # The fingerprint is the line to compare against a second implementation:
+    # short, shown by every tool, and a function of the passphrase as well as
+    # the words. The xpub is labelled with its depth because a wallet shows you
+    # the ACCOUNT key three levels down, which shares no bytes with this one --
+    # a mismatch there looks exactly like a derivation bug and is not one.
+    #
+    # The descriptors carry what a bare xpub cannot: the script type (absent from
+    # the `xpub` prefix, so a wallet given one has to guess, and a wrong guess
+    # watches the wrong branch and reports zero on a funded wallet), which seed,
+    # and which branch. The spending one is the same account with the key that
+    # signs -- Core has no BIP39 in it, so a node cannot be the wallet for these
+    # words until they are a key, and this is that key in the form Core imports.
+    # It is worth what the words are worth, and it is sufficient on its own,
+    # which is what ends the passphrase's protection. Said once here rather than
+    # printed every run; the README says it where someone deciding can read it.
+    print("\n  Watch-only descriptor -- native segwit, m/84h/0h/0h")
+    print("    %s" % watch_descriptor(seed))
+    print("\n  Spending descriptor -- SECRET")
+    print("    %s" % spend_descriptor(seed))
 
     print("")
 
